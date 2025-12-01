@@ -21,6 +21,14 @@ rag_deps = [
     "lancedb<0.18.0"  # pylance requires pyarrow 14 or higher. Later versions of LanceDB give strange errors with pyarrow<=16.0.0.
 ]
 
+optimizer_deps = [
+    # Optimizer dependencies
+    "numpy<2.0",  # numpy>=2.0 is not compatible with libraries like torch
+    "scikit-learn>=1.4.0",  # for MCC and balanced accuracy metrics
+    "spacy>=3.5.0",  # for semantic chunking in crossover
+    "neo4j>=5.0.0",  # for Neo4j-based mutation (optional)
+]
+
 def readme():
     with open('README.md', encoding='utf-8') as f:
         return f.read()
@@ -53,7 +61,8 @@ setup(
         # Extra dependencies for functionality like RAGForge,
         # which may not be needed by all users
         "rag": rag_deps,
-        "all": rag_deps,
+        "optimizer": optimizer_deps,
+        "all": rag_deps + optimizer_deps,
     },
     entry_points={
         "console_scripts": [

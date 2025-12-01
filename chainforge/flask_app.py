@@ -1948,7 +1948,121 @@ def proxy_image():
         return jsonify({"error": f"Error fetching image: {str(e)}"}), 500
 
 
-""" 
+# === Optimizer Endpoint ===
+@app.route("/optimize", methods=["POST"])
+def optimize():
+    """
+    Run prompt optimization using evolutionary algorithms.
+
+    Expected form data:
+    - method: The optimizer method identifier (e.g., "evolutionary_algorithm")
+    - initial_prompts: JSON array of initial prompt strings
+    - evaluation_data: JSON array of evaluation data (for fitness calculation)
+    - population_size: Population size (default: 10)
+    - num_generations: Number of generations (default: 5)
+    - mutation_rate: Mutation probability (default: 0.3)
+    - crossover_rate: Crossover probability (default: 0.7)
+    - selection_method: Selection method ('tournament' or 'roulette', default: 'tournament')
+    - tournament_size: Tournament size for tournament selection (default: 3)
+    - fitness_metric: Fitness metric ('mcc' or 'balanced_accuracy', default: 'mcc')
+    - elitism_count: Number of elite individuals to preserve (default: 2)
+    - neo4j_uri: Neo4j database URI (optional)
+    - neo4j_user: Neo4j username (optional)
+    - neo4j_password: Neo4j password (optional)
+
+    Returns:
+    - JSON response with optimization results
+    """
+    try:
+        from chainforge.optimizers import OptimizerRegistry
+    except ImportError:
+        return jsonify({"error": "Optimizer module not available. Please install required dependencies."}), 500
+
+    if not request.form:
+        return jsonify({"error": "Request must be form data"}), 400
+
+    method = request.form.get("method")
+    initial_prompts_json = request.form.get("initial_prompts")
+    evaluation_data_json = request.form.get("evaluation_data")
+
+    if not method:
+        return jsonify({"error": "Missing 'method' in form data"}), 400
+    if not initial_prompts_json:
+        return jsonify({"error": "Missing 'initial_prompts' in form data"}), 400
+
+    try:
+        initial_prompts = json.loads(initial_prompts_json)
+        if not isinstance(initial_prompts, list):
+            return jsonify({"error": "initial_prompts must be a JSON array"}), 400
+    except (json.JSONDecodeError, ValueError) as e:
+        return jsonify({"error": f"Invalid JSON in initial_prompts: {e}"}), 400
+
+    # Parse evaluation data if provided
+    evaluation_data = []
+    if evaluation_data_json:
+        try:
+            evaluation_data = json.loads(evaluation_data_json)
+            if not isinstance(evaluation_data, list):
+                return jsonify({"error": "evaluation_data must be a JSON array"}), 400
+        except (json.JSONDecodeError, ValueError) as e:
+            return jsonify({"error": f"Invalid JSON in evaluation_data: {e}"}), 400
+
+    # Get the optimizer handler
+    try:
+        handler = OptimizerRegistry.get_handler(method)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    if not handler:
+        return jsonify({"error": f"Unsupported optimizer method: {method}"}), 400
+
+    # Extract settings from form data
+    settings = {}
+    known_int_params = {"population_size", "num_generations", "tournament_size", "elitism_count"}
+    known_float_params = {"mutation_rate", "crossover_rate"}
+    known_str_params = {"selection_method", "fitness_metric", "neo4j_uri", "neo4j_user", "neo4j_password"}
+
+    for key, value in request.form.items():
+        if key not in ["method", "initial_prompts", "evaluation_data"]:
+            try:
+                if key in known_int_params:
+                    settings[key] = int(value)
+                elif key in known_float_params:
+                    settings[key] = float(value)
+                elif key in known_str_params:
+                    settings[key] = value
+                else:
+                    settings[key] = value
+            except (ValueError, TypeError):
+                print(f"Warning: Could not convert setting '{key}' with value '{value}'. Using raw value.", file=sys.stderr)
+                settings[key] = value
+
+    # Create a mock evaluation function that returns the stored evaluation data
+    # In a real scenario, this would call the actual evaluator
+    def evaluation_function(prompt):
+        # For now, return the evaluation_data as-is
+        # In practice, this should trigger actual evaluation
+        return evaluation_data
+
+    try:
+        # Call the optimizer handler
+        result = handler(initial_prompts, evaluation_function, settings)
+        return jsonify(result), 200
+
+    except ValueError as ve:
+        print(f"Configuration error during optimization ({method}): {ve}", file=sys.stderr)
+        return jsonify({"error": f"Setup error: {ve}"}), 400
+    except ImportError as ie:
+        print(f"Import error during optimization ({method}): {ie}", file=sys.stderr)
+        return jsonify({"error": f"Missing library dependency: {ie.name}"}), 500
+    except Exception as e:
+        print(f"Unexpected error during optimization ({method}): {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": "An internal error occurred during optimization."}), 500
+
+
+"""
     SPIN UP SERVER
 """
 def run_server(host="", port=8000, flows_dir=None, secure: Literal["off", "settings", "all"] = "off"):
