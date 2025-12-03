@@ -2037,11 +2037,42 @@ def optimize():
                 print(f"Warning: Could not convert setting '{key}' with value '{value}'. Using raw value.", file=sys.stderr)
                 settings[key] = value
 
-    # Create a mock evaluation function that returns the stored evaluation data
-    # In a real scenario, this would call the actual evaluator
+    # Create evaluation function that returns evaluation data for a prompt
+    # The evaluation_data comes from an EvaluatorNode and already contains
+    # eval_res with true and predicted labels for the initial prompts
     def evaluation_function(prompt):
-        # For now, return the evaluation_data as-is
-        # In practice, this should trigger actual evaluation
+        """
+        Return evaluation results for a given prompt.
+
+        The evaluation_data should come from ChainForge's EvaluatorNode and contain
+        evaluation results in the format expected by parse_predictions:
+
+        [
+            {
+                "text": "response text",
+                "prompt": "the prompt used",
+                "eval_res": {
+                    "items": [
+                        {"true": "label1", "pred": "label2"},
+                        ...
+                    ]
+                }
+            },
+            ...
+        ]
+
+        For the evolutionary algorithm, we simply return the evaluation_data as-is.
+        Each individual's fitness will be calculated from parse_predictions(eval_results).
+
+        Note: In a real implementation, you would:
+        1. Format the prompt with test inputs
+        2. Call an LLM with the formatted prompt
+        3. Extract predictions from LLM responses
+        4. Compare with ground truth labels
+        5. Return in the format above
+
+        For now, this returns the pre-computed evaluation data.
+        """
         return evaluation_data
 
     try:

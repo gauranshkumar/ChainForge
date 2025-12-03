@@ -89,7 +89,9 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
   );
   const [elitismCount, setElitismCount] = useState(data.elitism_count || 2);
   const [useNeo4j, setUseNeo4j] = useState(false);
-  const [neo4jUri, setNeo4jUri] = useState(data.neo4j_uri || "");
+  const [neo4jUri, setNeo4jUri] = useState(
+    data.neo4j_uri || "bolt://localhost:7688",
+  );
   const [neo4jUser, setNeo4jUser] = useState(data.neo4j_user || "");
   const [neo4jPassword, setNeo4jPassword] = useState(data.neo4j_password || "");
 

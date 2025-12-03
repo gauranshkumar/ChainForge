@@ -7,7 +7,8 @@ from chainforge.optimizers.utils import (
     calculate_fitness,
     tournament_selection,
     roulette_wheel_selection,
-    parse_predictions
+    parse_predictions,
+    split_preserving_data
 )
 
 
@@ -38,16 +39,49 @@ class Individual:
         return ind
 
 
+def reconstruct_with_data(
+    mutable_text: str,
+    original_segments: List[str],
+    is_data_flags: List[bool]
+) -> str:
+    """
+    Reconstruct a prompt by combining mutated text with original data sections.
+
+    Args:
+        mutable_text: The modified instruction text
+        original_segments: Original segments from parent
+        is_data_flags: Flags indicating which segments are data
+
+    Returns:
+        Reconstructed prompt with data sections preserved
+    """
+    result_parts = []
+    mutable_used = False
+
+    for segment, is_data in zip(original_segments, is_data_flags):
+        if is_data:
+            # Keep data section unchanged
+            result_parts.append(segment)
+        else:
+            # Replace with mutated text (only first mutable section)
+            if not mutable_used:
+                result_parts.append(mutable_text)
+                mutable_used = True
+
+    return "".join(result_parts)
+
+
 def semantic_crossover(
     parent1: str,
     parent2: str,
     nlp_model: Optional[Any] = None
 ) -> Tuple[str, str]:
     """
-    Perform semantic chunking-based crossover.
+    Perform semantic chunking-based crossover while preserving data sections.
 
     Uses spaCy to identify semantic chunks (sentences) and swaps them
-    between parents to create offspring.
+    between parents. Data sections marked with [DATA]...[/DATA], code blocks,
+    or example lines are preserved.
 
     Args:
         parent1: First parent prompt
@@ -57,75 +91,102 @@ def semantic_crossover(
     Returns:
         Tuple of two offspring prompts
     """
+    # Split prompts into mutable and data sections
+    segments1, is_data1 = split_preserving_data(parent1)
+    segments2, is_data2 = split_preserving_data(parent2)
+
+    # Extract only mutable (non-data) segments for crossover
+    mutable1 = [seg for seg, is_data in zip(segments1, is_data1) if not is_data]
+    mutable2 = [seg for seg, is_data in zip(segments2, is_data2) if not is_data]
+
+    # If no mutable sections, return parents unchanged
+    if not mutable1 or not mutable2:
+        return parent1, parent2
+
+    # Perform crossover on mutable text only
+    mutable_text1 = " ".join(mutable1)
+    mutable_text2 = " ".join(mutable2)
+
     try:
         import spacy
 
         if nlp_model is None:
-            # Try to load a spacy model, fallback to simple sentence splitting
             try:
                 nlp_model = spacy.load("en_core_web_sm")
             except OSError:
-                # Fallback to simple sentence splitting
-                return simple_sentence_crossover(parent1, parent2)
+                return simple_sentence_crossover(mutable_text1, mutable_text2, parent1, parent2, segments1, is_data1, segments2, is_data2)
 
-        # Parse both parents into semantic chunks (sentences)
-        doc1 = nlp_model(parent1)
-        doc2 = nlp_model(parent2)
+        # Parse mutable text into sentences
+        doc1 = nlp_model(mutable_text1)
+        doc2 = nlp_model(mutable_text2)
 
         sents1 = [sent.text.strip() for sent in doc1.sents]
         sents2 = [sent.text.strip() for sent in doc2.sents]
 
-        # If either parent has no sentences, fallback
         if len(sents1) == 0 or len(sents2) == 0:
-            return simple_sentence_crossover(parent1, parent2)
+            return simple_sentence_crossover(mutable_text1, mutable_text2, parent1, parent2, segments1, is_data1, segments2, is_data2)
 
-        # Single-point crossover on sentences
+        # Crossover on sentences
         crossover_point1 = random.randint(0, len(sents1))
         crossover_point2 = random.randint(0, len(sents2))
 
-        offspring1_sents = sents1[:crossover_point1] + sents2[crossover_point2:]
-        offspring2_sents = sents2[:crossover_point2] + sents1[crossover_point1:]
+        offspring1_mutable = " ".join(sents1[:crossover_point1] + sents2[crossover_point2:])
+        offspring2_mutable = " ".join(sents2[:crossover_point2] + sents1[crossover_point1:])
 
-        offspring1 = " ".join(offspring1_sents)
-        offspring2 = " ".join(offspring2_sents)
+        # Reconstruct offspring by combining mutable text with original data sections
+        offspring1 = reconstruct_with_data(offspring1_mutable, segments1, is_data1)
+        offspring2 = reconstruct_with_data(offspring2_mutable, segments2, is_data2)
 
         return offspring1, offspring2
 
     except ImportError:
-        # If spacy is not available, use simple crossover
-        return simple_sentence_crossover(parent1, parent2)
+        return simple_sentence_crossover(mutable_text1, mutable_text2, parent1, parent2, segments1, is_data1, segments2, is_data2)
 
 
-def simple_sentence_crossover(parent1: str, parent2: str) -> Tuple[str, str]:
+def simple_sentence_crossover(
+    mutable1: str,
+    mutable2: str,
+    parent1: str,
+    parent2: str,
+    segments1: List[str],
+    is_data1: List[bool],
+    segments2: List[str],
+    is_data2: List[bool]
+) -> Tuple[str, str]:
     """
-    Simple sentence-based crossover without NLP.
-
-    Splits on periods and performs crossover.
+    Simple sentence-based crossover without NLP, preserving data sections.
 
     Args:
-        parent1: First parent prompt
-        parent2: Second parent prompt
+        mutable1: Mutable text from parent1
+        mutable2: Mutable text from parent2
+        parent1: Full parent1 prompt
+        parent2: Full parent2 prompt
+        segments1: Segments from parent1
+        is_data1: Data flags from parent1
+        segments2: Segments from parent2
+        is_data2: Data flags from parent2
 
     Returns:
         Tuple of two offspring prompts
     """
     # Split on periods (simple sentence splitting)
-    sents1 = [s.strip() + "." for s in parent1.split(".") if s.strip()]
-    sents2 = [s.strip() + "." for s in parent2.split(".") if s.strip()]
+    sents1 = [s.strip() + "." for s in mutable1.split(".") if s.strip()]
+    sents2 = [s.strip() + "." for s in mutable2.split(".") if s.strip()]
 
     if len(sents1) == 0:
-        sents1 = [parent1]
+        sents1 = [mutable1]
     if len(sents2) == 0:
-        sents2 = [parent2]
+        sents2 = [mutable2]
 
     crossover_point1 = random.randint(0, len(sents1))
     crossover_point2 = random.randint(0, len(sents2))
 
-    offspring1_sents = sents1[:crossover_point1] + sents2[crossover_point2:]
-    offspring2_sents = sents2[:crossover_point2] + sents1[crossover_point1:]
+    offspring1_mutable = " ".join(sents1[:crossover_point1] + sents2[crossover_point2:])
+    offspring2_mutable = " ".join(sents2[:crossover_point2] + sents1[crossover_point1:])
 
-    offspring1 = " ".join(offspring1_sents)
-    offspring2 = " ".join(offspring2_sents)
+    # Reconstruct with data
+    offspring1 = reconstruct_with_data(offspring1_mutable, segments1, is_data1)
+    offspring2 = reconstruct_with_data(offspring2_mutable, segments2, is_data2)
 
     return offspring1, offspring2
 
@@ -136,85 +197,169 @@ def neo4j_mutation(
     mutation_rate: float = 0.3
 ) -> str:
     """
-    Perform mutation using Neo4j prompt taxonomy.
+    Perform mutation using Memgraph/Neo4j prompt taxonomy while preserving data sections.
 
-    Connects to Neo4j database containing prompt templates and categories,
-    and replaces parts of the prompt with semantically similar alternatives.
+    Connects to Memgraph database containing Pattern nodes with template labels,
+    organized by Category and SubCategory. Fetches templates from different
+    categories to ensure diversity in mutation.
+
+    Data sections marked with [DATA]...[/DATA], code blocks, or example lines
+    are preserved unchanged.
+
+    Expected graph structure:
+    - (Pattern {label: "template text"})-[:BELONGS_TO]->(SubCategory)
+    - (SubCategory)-[:BELONGS_TO]->(Category)
+    - Or: (Pattern)-[:BELONGS_TO]->(Category)
 
     Args:
         prompt: The prompt to mutate
-        neo4j_connection: Dict with 'uri', 'user', 'password' for Neo4j connection
+        neo4j_connection: Dict with 'uri', 'user', 'password' for Memgraph connection
+                         Default uri: bolt://localhost:7688
         mutation_rate: Probability of mutation
 
     Returns:
-        Mutated prompt
+        Mutated prompt with data sections preserved
     """
     if random.random() > mutation_rate:
         return prompt
 
+    # Split into mutable and data sections
+    segments, is_data_flags = split_preserving_data(prompt)
+
+    # Extract mutable text
+    mutable_segments = [seg for seg, is_data in zip(segments, is_data_flags) if not is_data]
+
+    if not mutable_segments:
+        # No mutable sections, return unchanged
+        return prompt
+
+    mutable_text = " ".join(mutable_segments)
+
     if neo4j_connection is None:
         # Fallback to simple word-level mutation
-        return simple_word_mutation(prompt, mutation_rate)
+        mutated_text = simple_word_mutation(mutable_text, mutation_rate)
+        return reconstruct_with_data(mutated_text, segments, is_data_flags)
 
     try:
         from neo4j import GraphDatabase
 
-        uri = neo4j_connection.get("uri")
-        user = neo4j_connection.get("user")
-        password = neo4j_connection.get("password")
+        uri = neo4j_connection.get("uri", "bolt://localhost:7688")
+        user = neo4j_connection.get("user", "")
+        password = neo4j_connection.get("password", "")
 
-        if not all([uri, user, password]):
-            return simple_word_mutation(prompt, mutation_rate)
-
-        driver = GraphDatabase.driver(uri, auth=(user, password))
+        # Memgraph typically doesn't require auth, but support it if provided
+        if user and password:
+            driver = GraphDatabase.driver(uri, auth=(user, password))
+        else:
+            driver = GraphDatabase.driver(uri, auth=None)
 
         with driver.session() as session:
-            # Query to find similar prompt templates in the taxonomy
-            # This assumes a graph structure like:
-            # (PromptTemplate)-[:BELONGS_TO]->(Category)
-            # (PromptTemplate)-[:SIMILAR_TO]->(PromptTemplate)
-            result = session.run(
-                """
-                MATCH (p:PromptTemplate)
-                WHERE p.text CONTAINS $search_term
-                WITH p
-                MATCH (p)-[:SIMILAR_TO*1..2]-(similar:PromptTemplate)
-                RETURN DISTINCT similar.text as template
-                LIMIT 5
-                """,
-                search_term=prompt[:50]  # Use first 50 chars as search term
-            )
+            # Step 1: Try to identify the current prompt's category/subcategory
+            # This helps us fetch templates from DIFFERENT categories
+            current_category = None
+            current_subcategory = None
 
-            templates = [record["template"] for record in result]
+            try:
+                # Try to find if the mutable text matches any existing pattern
+                category_result = session.run(
+                    """
+                    MATCH (p:Pattern)
+                    WHERE p.label CONTAINS $search_term
+                    OPTIONAL MATCH (p)-[:BELONGS_TO]->(sc:SubCategory)
+                    OPTIONAL MATCH (p)-[:BELONGS_TO]->(c:Category)
+                    OPTIONAL MATCH (sc)-[:BELONGS_TO]->(c2:Category)
+                    RETURN sc.name as subcategory,
+                           COALESCE(c.name, c2.name) as category
+                    LIMIT 1
+                    """,
+                    search_term=mutable_text[:50]
+                )
 
+                record = category_result.single()
+                if record:
+                    current_subcategory = record.get("subcategory")
+                    current_category = record.get("category")
+            except Exception as e:
+                print(f"Could not determine current category: {e}")
+
+            # Step 2: Fetch templates from DIFFERENT categories/subcategories
+            # This ensures diversity in mutation
+            templates = []
+
+            # Query 1: Try to get patterns from different subcategories
+            if current_subcategory:
+                result = session.run(
+                    """
+                    MATCH (p:Pattern)-[:BELONGS_TO]->(sc:SubCategory)
+                    WHERE sc.name <> $current_subcategory AND p.label IS NOT NULL
+                    RETURN DISTINCT p.label as template
+                    LIMIT 10
+                    """,
+                    current_subcategory=current_subcategory
+                )
+                templates = [record["template"] for record in result if record["template"]]
+
+            # Query 2: If no results or no subcategory, try different categories
+            if not templates and current_category:
+                result = session.run(
+                    """
+                    MATCH (p:Pattern)-[:BELONGS_TO*1..2]->(c:Category)
+                    WHERE c.name <> $current_category AND p.label IS NOT NULL
+                    RETURN DISTINCT p.label as template
+                    LIMIT 10
+                    """,
+                    current_category=current_category
+                )
+                templates = [record["template"] for record in result if record["template"]]
+
+            # Query 3: Fallback - just get any patterns if nothing else works
+            if not templates:
+                result = session.run(
+                    """
+                    MATCH (p:Pattern)
+                    WHERE p.label IS NOT NULL
+                    RETURN p.label as template
+                    LIMIT 10
+                    """
+                )
+                templates = [record["template"] for record in result if record["template"]]
+
+            # Step 3: Select a random template and perform mutation on mutable text
             if templates:
                 # Select a random template
                 selected_template = random.choice(templates)
 
-                # Perform template-based mutation
-                # Split prompt into sentences and replace one with template
+                # Perform template-based mutation on mutable text only
+                # Split mutable text into sentences and replace one with template
                 try:
                     import spacy
                     nlp = spacy.load("en_core_web_sm")
-                    doc = nlp(prompt)
+                    doc = nlp(mutable_text)
                     sents = [sent.text.strip() for sent in doc.sents]
                 except (ImportError, OSError):
-                    sents = [s.strip() + "." for s in prompt.split(".") if s.strip()]
+                    sents = [s.strip() + "." for s in mutable_text.split(".") if s.strip()]
 
                 if len(sents) > 0:
                     # Replace a random sentence
                     replace_idx = random.randint(0, len(sents) - 1)
                     sents[replace_idx] = selected_template
-                    return " ".join(sents)
+                    mutated_text = " ".join(sents)
+
+                    # Reconstruct with data sections
+                    return reconstruct_with_data(mutated_text, segments, is_data_flags)
 
         driver.close()
 
     except ImportError:
         print("neo4j package not installed, using simple mutation")
-        return simple_word_mutation(prompt, mutation_rate)
+        mutated_text = simple_word_mutation(mutable_text, mutation_rate)
+        return reconstruct_with_data(mutated_text, segments, is_data_flags)
     except Exception as e:
-        print(f"Error during Neo4j mutation: {e}")
-        return simple_word_mutation(prompt, mutation_rate)
+        print(f"Error during Memgraph mutation: {e}")
+        import traceback
+        traceback.print_exc()
+        mutated_text = simple_word_mutation(mutable_text, mutation_rate)
+        return reconstruct_with_data(mutated_text, segments, is_data_flags)
 
     return prompt
 

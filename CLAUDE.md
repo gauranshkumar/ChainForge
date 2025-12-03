@@ -291,13 +291,21 @@ Each stage is extensible via registry pattern (`ChunkingMethodRegistry`, `Retrie
 - `elitism_count`: Number of elite individuals to preserve (default: 2)
 - `neo4j_uri`, `neo4j_user`, `neo4j_password`: Optional Neo4j connection
 
-**Neo4j Graph Schema** (for mutation):
+**Memgraph Graph Schema** (for mutation):
 ```cypher
-(PromptTemplate)-[:BELONGS_TO]->(Category)
-(PromptTemplate)-[:SIMILAR_TO]->(PromptTemplate)
+(Pattern {label: "template text"})-[:BELONGS_TO]->(SubCategory {name: "subcategory"})
+(SubCategory)-[:BELONGS_TO]->(Category {name: "category"})
 ```
 
-Each `PromptTemplate` node should have a `text` property containing the template.
+Or alternatively:
+```cypher
+(Pattern {label: "template text"})-[:BELONGS_TO]->(Category {name: "category"})
+```
+
+- **Pattern** nodes contain the template text in the `label` property
+- Patterns are organized hierarchically: Pattern → SubCategory → Category
+- Mutation fetches patterns from DIFFERENT subcategories/categories to ensure diversity
+- Memgraph server runs at `bolt://localhost:7688` (typically no authentication required)
 
 ## Environment Variables
 

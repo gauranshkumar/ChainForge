@@ -1,5 +1,6 @@
 """Utility functions for optimizers."""
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
+import re
 import numpy as np
 from sklearn.metrics import matthews_corrcoef, balanced_accuracy_score, confusion_matrix
 
@@ -98,6 +99,108 @@ def roulette_wheel_selection(
 
     selected_idx = np.random.choice(len(population), p=probabilities)
     return population[selected_idx]
+
+
+def extract_data_sections(prompt: str) -> Tuple[List[Tuple[int, int]], List[str]]:
+    """
+    Extract protected data sections from a prompt.
+
+    Data sections can be marked with:
+    - [DATA]...[/DATA] tags
+    - ```...``` code blocks
+    - Lines starting with "Example:", "Input:", "Output:"
+
+    Args:
+        prompt: The prompt text
+
+    Returns:
+        Tuple of (protected_ranges, data_sections)
+        - protected_ranges: List of (start, end) character indices
+        - data_sections: List of the actual data section texts
+    """
+    protected_ranges = []
+    data_sections = []
+
+    # Match [DATA]...[/DATA] tags
+    for match in re.finditer(r'\[DATA\](.*?)\[/DATA\]', prompt, re.DOTALL):
+        protected_ranges.append((match.start(), match.end()))
+        data_sections.append(match.group(0))
+
+    # Match code blocks ```...```
+    for match in re.finditer(r'```(.*?)```', prompt, re.DOTALL):
+        protected_ranges.append((match.start(), match.end()))
+        data_sections.append(match.group(0))
+
+    # Match example blocks (lines starting with Example:, Input:, Output:)
+    lines = prompt.split('\n')
+    current_pos = 0
+    in_example_block = False
+    block_start = 0
+
+    for line in lines:
+        line_stripped = line.strip()
+        if line_stripped.startswith(('Example:', 'Input:', 'Output:', 'Q:', 'A:')):
+            if not in_example_block:
+                block_start = current_pos
+                in_example_block = True
+        elif in_example_block and line_stripped == '':
+            # End of example block
+            protected_ranges.append((block_start, current_pos))
+            data_sections.append(prompt[block_start:current_pos])
+            in_example_block = False
+
+        current_pos += len(line) + 1  # +1 for newline
+
+    # If still in example block at end
+    if in_example_block:
+        protected_ranges.append((block_start, len(prompt)))
+        data_sections.append(prompt[block_start:len(prompt)])
+
+    return protected_ranges, data_sections
+
+
+def split_preserving_data(prompt: str) -> Tuple[List[str], List[bool]]:
+    """
+    Split prompt into segments, marking which are data sections.
+
+    Args:
+        prompt: The prompt text
+
+    Returns:
+        Tuple of (segments, is_data_flags)
+        - segments: List of text segments
+        - is_data_flags: List of booleans indicating if segment is data
+    """
+    protected_ranges, _ = extract_data_sections(prompt)
+
+    if not protected_ranges:
+        # No data sections, treat entire prompt as mutable
+        return [prompt], [False]
+
+    # Sort ranges
+    protected_ranges.sort(key=lambda x: x[0])
+
+    segments = []
+    is_data_flags = []
+    current_pos = 0
+
+    for start, end in protected_ranges:
+        # Add mutable text before data section
+        if start > current_pos:
+            segments.append(prompt[current_pos:start])
+            is_data_flags.append(False)
+
+        # Add data section
+        segments.append(prompt[start:end])
+        is_data_flags.append(True)
+        current_pos = end
+
+    # Add remaining mutable text
+    if current_pos < len(prompt):
+        segments.append(prompt[current_pos:])
+        is_data_flags.append(False)
+
+    return segments, is_data_flags
 
 
 def parse_predictions(results: List[Dict[str, Any]]) -> Tuple[List, List]:
