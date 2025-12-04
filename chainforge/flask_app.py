@@ -9,6 +9,27 @@ from flask_cors import CORS, cross_origin
 from chainforge.providers import ProviderRegistry
 from chainforge.security.password_utils import ensure_password
 from chainforge.security.secure_save import load_json_file, save_json_file
+import chainforge.providers.native # Register native providers
+
+# Import optimizers with error handling
+try:
+    from chainforge.optimizers import OptimizerRegistry
+    msg = "✓ OptimizerRegistry imported successfully\n"
+    print(msg, file=sys.stderr)
+    sys.stderr.flush()
+    # Write to file too
+    with open('/tmp/chainforge_import_debug.log', 'w') as f:
+        f.write(msg)
+except Exception as e:
+    import traceback
+    msg = f"✗ Failed to import OptimizerRegistry: {e}\n{traceback.format_exc()}"
+    print(msg, file=sys.stderr)
+    sys.stderr.flush()
+    # Write to file
+    with open('/tmp/chainforge_import_debug.log', 'w') as f:
+        f.write(msg)
+    OptimizerRegistry = None
+
 import requests as py_requests
 from platformdirs import user_data_dir
 import copy
@@ -96,7 +117,6 @@ def HIJACK_PYTHON_PRINT() -> None:
 
     # Create a temporary file for logging and keep it open
     HIJACKED_PRINT_LOG_FILE = tempfile.NamedTemporaryFile(mode='a+', delete=False)
-
     # Create a wrapper over the original print method, and save the original print
     ORIGINAL_PRINT_METHOD = print
     def hijacked_print(*args, **kwargs):
@@ -1976,10 +1996,7 @@ async def optimize():
     Returns:
     - JSON response with optimization results
     """
-    try:
-        from chainforge.optimizers import OptimizerRegistry
-    except ImportError:
-        return jsonify({"error": "Optimizer module not available. Please install required dependencies."}), 500
+    print(f"DEBUG: Available optimizers: {OptimizerRegistry.list_methods()}")
 
     if not request.form:
         return jsonify({"error": "Request must be form data"}), 400
@@ -2041,7 +2058,9 @@ async def optimize():
 
     # Get the optimizer handler
     try:
+        print("Getting optimizer handler...")
         handler = OptimizerRegistry.get_handler(method)
+        print(f"Optimizer handler obtained: {handler}")
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
@@ -2190,6 +2209,68 @@ async def optimize():
         return jsonify({"error": "An internal error occurred during optimization."}), 500
 
 
+@app.route("/optimize/generation", methods=["POST"])
+def optimize_generation():
+    """
+    Run a single generation of optimization.
+
+    This endpoint allows the frontend to control the optimization loop,
+    evaluating prompts using its own LLM providers.
+
+    Expected JSON data:
+    - method: The optimizer method identifier
+    - generation: Current generation number (0 for initial)
+    - population: Array of {prompt: str, fitness: float} objects
+    - settings: Optimizer configuration (mutation_rate, crossover_rate, etc.)
+
+    Returns:
+    - new_population: Array of prompt strings to evaluate
+    - generation: Next generation number
+    - best_fitness: Best fitness in current population
+    - avg_fitness: Average fitness in current population
+    - complete: Boolean indicating if optimization is done
+    """
+    try:
+        data = request.get_json()
+
+        if not data:
+            return jsonify({"error": "Request must be JSON"}), 400
+
+        method = data.get("method")
+        generation = data.get("generation", 0)
+        population = data.get("population", [])
+        settings = data.get("settings", {})
+
+        # Validate required fields
+        if not method:
+            return jsonify({"error": "Missing 'method' field"}), 400
+        if not isinstance(population, list):
+            return jsonify({"error": "'population' must be an array"}), 400
+        if not isinstance(settings, dict):
+            return jsonify({"error": "'settings' must be an object"}), 400
+
+        # Get the optimizer module
+        if method == "evolutionary_algorithm":
+            from chainforge.optimizers import evolutionary
+
+            # Call the generation step function
+            result = evolutionary.run_generation_step(
+                generation=generation,
+                population=population,
+                settings=settings
+            )
+
+            return jsonify(result), 200
+        else:
+            return jsonify({"error": f"Unsupported optimizer method: {method}"}), 400
+
+    except Exception as e:
+        print(f"Error in optimize_generation: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
 """
     SPIN UP SERVER
 """
@@ -2219,7 +2300,7 @@ def run_server(host="", port=8000, flows_dir=None, secure: Literal["off", "setti
             exit(1)
         FLOWS_DIR_PWD = password
 
-    app.run(host=host, port=port, debug=False)
+    app.run(host=host, port=port, debug=True)
 
 if __name__ == '__main__':
     print("Run app.py instead.")

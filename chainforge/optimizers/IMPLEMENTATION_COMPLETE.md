@@ -220,14 +220,14 @@ LLM Config (in OptimizerNode UI) ─────┘      ├─> Render template
 
 1. **Create prompt template** in PromptNode:
    ```
-   Classify the sentiment of: {input}
+Classify the sentiment of: {input}
 
-   [DATA]
-   Example: "Great!" → positive
-   Example: "Terrible" → negative
-   [/DATA]
+[DATA]
+Example: "Great!" → positive
+Example: "Terrible" → negative
+[/DATA]
 
-   Answer:
+Answer:
    ```
 
 2. **Upload test dataset** via TabularDataNode (CSV):

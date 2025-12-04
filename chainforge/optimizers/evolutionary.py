@@ -560,3 +560,140 @@ async def evolutionary_algorithm_optimizer(
         "history": history,
         "final_population": [ind.to_dict() for ind in population]
     }
+
+
+def run_generation_step(
+    generation: int,
+    population: List[Dict[str, Any]],
+    settings: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Run a single generation step of the evolutionary algorithm.
+
+    This function is called by the frontend which handles LLM evaluation.
+    The frontend provides the current population with fitness scores,
+    and this function returns the next generation of prompts to evaluate.
+
+    Args:
+        generation: Current generation number (0 = initial population)
+        population: List of {"prompt": str, "fitness": float} dicts
+        settings: Optimizer configuration
+
+    Returns:
+        Dict containing:
+        - new_population: List of prompt strings to evaluate
+        - generation: Next generation number
+        - best_fitness: Best fitness in current population
+        - avg_fitness: Average fitness in current population
+        - best_prompt: Best prompt so far
+        - complete: True if this is the final generation
+    """
+    import random
+
+    # Extract settings
+    population_size = int(settings.get("population_size", 10))
+    num_generations = int(settings.get("num_generations", 5))
+    mutation_rate = float(settings.get("mutation_rate", 0.3))
+    crossover_rate = float(settings.get("crossover_rate", 0.7))
+    selection_method = settings.get("selection_method", "tournament")
+    tournament_size = int(settings.get("tournament_size", 3))
+    elitism_count = int(settings.get("elitism_count", 2))
+
+    # Neo4j connection (optional)
+    neo4j_connection = None
+    if all(k in settings for k in ["neo4j_uri", "neo4j_user", "neo4j_password"]):
+        neo4j_connection = {
+            "uri": settings["neo4j_uri"],
+            "user": settings["neo4j_user"],
+            "password": settings["neo4j_password"]
+        }
+
+    # Load spaCy model for crossover
+    nlp_model = None
+    try:
+        import spacy
+        nlp_model = spacy.load("en_core_web_sm")
+    except (ImportError, OSError):
+        pass
+
+    # Convert population to Individual objects with fitness
+    individuals = []
+    for item in population:
+        ind = Individual(prompt=item["prompt"], metadata=item.get("metadata", {}))
+        ind.fitness = item.get("fitness")
+        individuals.append(ind)
+
+    # Calculate statistics
+    fitnesses = [ind.fitness for ind in individuals if ind.fitness is not None]
+    best_fitness = max(fitnesses) if fitnesses else 0.0
+    avg_fitness = sum(fitnesses) / len(fitnesses) if fitnesses else 0.0
+    best_individual = max(individuals, key=lambda x: x.fitness if x.fitness is not None else float('-inf'))
+
+    # Check if we're done
+    if generation >= num_generations:
+        return {
+            "new_population": [],
+            "generation": generation,
+            "best_fitness": best_fitness,
+            "avg_fitness": avg_fitness,
+            "best_prompt": best_individual.prompt,
+            "complete": True
+        }
+
+    # Sort population by fitness (descending)
+    individuals.sort(key=lambda x: x.fitness if x.fitness is not None else float('-inf'), reverse=True)
+
+    # Apply elitism - keep top individuals
+    new_prompts = []
+    elite_individuals = individuals[:elitism_count]
+    new_prompts.extend([ind.prompt for ind in elite_individuals])
+
+    # Prepare for selection (need dict format and fitness list for utils functions)
+    pop_dicts = [ind.to_dict() for ind in individuals]
+    fitness_list = [ind.fitness if ind.fitness is not None else float('-inf') for ind in individuals]
+
+    # Generate rest of population through selection, crossover, mutation
+    while len(new_prompts) < population_size:
+        # Selection
+        if selection_method == "tournament":
+            parent1_dict = tournament_selection(pop_dicts, fitness_list, tournament_size)
+            parent2_dict = tournament_selection(pop_dicts, fitness_list, tournament_size)
+        else:  # roulette
+            parent1_dict = roulette_wheel_selection(pop_dicts, fitness_list)
+            parent2_dict = roulette_wheel_selection(pop_dicts, fitness_list)
+
+        parent1_prompt = parent1_dict["prompt"]
+        parent2_prompt = parent2_dict["prompt"]
+
+        # Crossover
+        if random.random() < crossover_rate:
+            if nlp_model:
+                # semantic_crossover returns tuple (child1, child2)
+                child1, child2 = semantic_crossover(parent1_prompt, parent2_prompt, nlp_model)
+                child_prompt = child1  # Use first offspring
+            else:
+                # Simple sentence-based crossover
+                sentences1 = parent1_prompt.split('.')
+                sentences2 = parent2_prompt.split('.')
+                if len(sentences1) > 1 and len(sentences2) > 1:
+                    crossover_point = random.randint(1, min(len(sentences1), len(sentences2)) - 1)
+                    child_prompt = '.'.join(sentences1[:crossover_point] + sentences2[crossover_point:])
+                else:
+                    child_prompt = parent1_prompt
+        else:
+            child_prompt = parent1_prompt
+
+        # Mutation
+        if random.random() < mutation_rate:
+            child_prompt = neo4j_mutation(child_prompt, neo4j_connection, mutation_rate)
+
+        new_prompts.append(child_prompt)
+
+    return {
+        "new_population": new_prompts,
+        "generation": generation + 1,
+        "best_fitness": best_fitness,
+        "avg_fitness": avg_fitness,
+        "best_prompt": best_individual.prompt,
+        "complete": False
+    }

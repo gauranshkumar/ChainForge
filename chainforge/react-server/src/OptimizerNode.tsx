@@ -33,6 +33,7 @@ import LLMResponseInspectorModal, {
 import InspectFooter from "./InspectFooter";
 import { IconSearch, IconEye } from "@tabler/icons-react";
 import { TemplateVarInfo, LLMResponse, LLMSpec } from "./backend/typing";
+import { getProvider } from "./backend/models";
 import { FLASK_BASE_URL } from "./backend/utils";
 import { v4 as uuid } from "uuid";
 import { LLMListContainer, LLMListContainerRef } from "./LLMListComponent";
@@ -272,23 +273,12 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
 
     try {
       // Extract LLM configuration from first LLM in list
-      const llm = llmItemsCurrState[0];
-      const llmProvider = llm.name;
+      const llm = llmItemsCurrState[0]; // Get first LLM from the array
+      const llmProvider = getProvider(llm.model) || "openai"; // Use helper to get provider enum value
       const llmModel = llm.model || "";
 
       // Extract settings from LLM spec
-      const llmParams: any = {};
-      if (llm.settings) {
-        llmParams.temperature = llm.settings.temperature ?? 0;
-        llmParams.max_tokens = llm.settings.max_tokens ?? 10;
-        // Add other settings as needed
-        if (llm.settings.max_tokens !== undefined) {
-          llmParams.max_tokens = llm.settings.max_tokens;
-        }
-        if (llm.settings.top_p !== undefined) {
-          llmParams.top_p = llm.settings.top_p;
-        }
-      }
+      const llmParams: any = llm.settings || {};
 
       const formData = new FormData();
       formData.append("method", "evolutionary_algorithm");
