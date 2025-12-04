@@ -16,6 +16,11 @@ import {
   Group,
   Switch,
   Button,
+  Textarea,
+  Modal,
+  Code,
+  Paper,
+  Divider,
 } from "@mantine/core";
 import { Status } from "./StatusIndicatorComponent";
 import { AlertModalContext } from "./AlertModal";
@@ -26,13 +31,22 @@ import LLMResponseInspectorModal, {
   LLMResponseInspectorModalRef,
 } from "./LLMResponseInspectorModal";
 import InspectFooter from "./InspectFooter";
-import { IconSearch, IconChartLine } from "@tabler/icons-react";
-import { TemplateVarInfo, LLMResponse } from "./backend/typing";
+import { IconSearch, IconEye } from "@tabler/icons-react";
+import { TemplateVarInfo, LLMResponse, LLMSpec } from "./backend/typing";
 import { FLASK_BASE_URL } from "./backend/utils";
 import { v4 as uuid } from "uuid";
+import { LLMListContainer, LLMListContainerRef } from "./LLMListComponent";
+import TemplateHooks, {
+  extractBracketedSubstrings,
+} from "./TemplateHooksComponent";
 
 interface OptimizerNodeData {
   title?: string;
+  // Prompt fields (from PromptNode)
+  prompt?: string;
+  vars?: string[];
+  llms?: LLMSpec[];
+  // Optimization fields
   population_size?: number;
   num_generations?: number;
   mutation_rate?: number;
@@ -95,6 +109,20 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
   const [neo4jUser, setNeo4jUser] = useState(data.neo4j_user || "");
   const [neo4jPassword, setNeo4jPassword] = useState(data.neo4j_password || "");
 
+  // Prompt template fields (from PromptNode)
+  const [promptText, setPromptText] = useState<string>(data.prompt || "");
+  const [templateVars, setTemplateVars] = useState<string[]>(data.vars || []);
+
+  // LLM configuration (using LLMListComponent like PromptNode)
+  const llmListContainer = useRef<LLMListContainerRef>(null);
+  const [llmItemsCurrState, setLLMItemsCurrState] = useState<LLMSpec[]>(
+    data.llms || [],
+  );
+
+  // Preview modal
+  const [showPreview, setShowPreview] = useState(false);
+  const [previewPrompts, setPreviewPrompts] = useState<string[]>([]);
+
   const inspectorRef = useRef<LLMResponseInspectorModalRef>(null);
 
   // On refresh
@@ -108,6 +136,30 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
       setBestFitness(0);
     }
   }, [data.refresh, id, setDataPropsForNode]);
+
+  // Callback for when LLM list changes (like PromptNode)
+  const onLLMListItemsChange = useCallback(
+    (items: LLMSpec[]) => {
+      setLLMItemsCurrState(items);
+      setDataPropsForNode(id, { llms: items });
+    },
+    [id, setDataPropsForNode],
+  );
+
+  // Callback for when prompt text changes
+  const onPromptTextChange = useCallback(
+    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+      const newPrompt = e.target.value;
+      setPromptText(newPrompt);
+      setDataPropsForNode(id, { prompt: newPrompt });
+
+      // Extract template variables from prompt
+      const vars = extractBracketedSubstrings(newPrompt);
+      setTemplateVars(vars);
+      setDataPropsForNode(id, { vars });
+    },
+    [id, setDataPropsForNode],
+  );
 
   // Save settings when they change
   useEffect(() => {
@@ -123,6 +175,9 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
       neo4j_uri: neo4jUri,
       neo4j_user: neo4jUser,
       neo4j_password: neo4jPassword,
+      prompt: promptText,
+      vars: templateVars,
+      llms: llmItemsCurrState,
     });
   }, [
     id,
@@ -137,6 +192,9 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
     neo4jUri,
     neo4jUser,
     neo4jPassword,
+    promptText,
+    templateVars,
+    llmItemsCurrState,
     setDataPropsForNode,
   ]);
 
@@ -148,41 +206,101 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
       setStatus(Status.ERROR);
     };
 
-    // 1) Pull initial prompts from upstream
-    let inputData: { prompts?: TemplateVarInfo[]; eval_data?: any[] } = {};
+    // 1) Check internal prompt template
+    if (!promptText || promptText.trim() === "") {
+      handleError(
+        "No prompt template found. Please enter a prompt template in the editor.",
+      );
+      return;
+    }
+
+    // 2) Check LLM configuration
+    if (!llmItemsCurrState || llmItemsCurrState.length === 0) {
+      handleError("No LLM configured. Please add an LLM model.");
+      return;
+    }
+
+    // 3) Pull test dataset from upstream (TabularDataNode or TextFieldsNode)
+    let inputData: {
+      input?: any[];
+      label?: any[];
+    } = {};
     try {
-      inputData = pullInputData(["prompts", "eval_data"], id) as {
-        prompts?: TemplateVarInfo[];
-        eval_data?: any[];
+      inputData = pullInputData(["input", "label"], id) as {
+        input?: any[];
+        label?: any[];
       };
     } catch (error) {
       handleError(
-        "No input data found. Connect PromptNode and EvaluatorNode.",
+        "No input data found. Connect TabularDataNode with 'input' and 'label' columns.",
         error,
       );
       return;
     }
 
-    const promptsArr = inputData.prompts || [];
-    const evalData = inputData.eval_data || [];
+    const inputColumn = inputData.input || [];
+    const labelColumn = inputData.label || [];
 
-    if (promptsArr.length === 0) {
-      handleError("No initial prompts found. Please provide initial prompts.");
+    if (inputColumn.length === 0 || labelColumn.length === 0) {
+      handleError(
+        "No test dataset found. Connect TabularDataNode with 'input' and 'label' columns.",
+      );
       return;
     }
+
+    // Convert TabularDataNode format to test dataset
+    // inputColumn/labelColumn are arrays of {text, metavars, associate_id}
+    const testDataset = inputColumn.map((item: any, idx: number) => {
+      const inputValue =
+        typeof item === "object" && "text" in item ? item.text : item;
+      const labelValue =
+        typeof labelColumn[idx] === "object" && "text" in labelColumn[idx]
+          ? labelColumn[idx].text
+          : labelColumn[idx];
+
+      return {
+        text: inputValue,
+        metavars: {
+          label: labelValue,
+        },
+      };
+    });
 
     setStatus(Status.LOADING);
     setJSONResponses([]);
     setOptimizationHistory([]);
 
     try {
+      // Extract LLM configuration from first LLM in list
+      const llm = llmItemsCurrState[0];
+      const llmProvider = llm.name;
+      const llmModel = llm.model || "";
+
+      // Extract settings from LLM spec
+      const llmParams: any = {};
+      if (llm.settings) {
+        llmParams.temperature = llm.settings.temperature ?? 0;
+        llmParams.max_tokens = llm.settings.max_tokens ?? 10;
+        // Add other settings as needed
+        if (llm.settings.max_tokens !== undefined) {
+          llmParams.max_tokens = llm.settings.max_tokens;
+        }
+        if (llm.settings.top_p !== undefined) {
+          llmParams.top_p = llm.settings.top_p;
+        }
+      }
+
       const formData = new FormData();
       formData.append("method", "evolutionary_algorithm");
-      formData.append(
-        "initial_prompts",
-        JSON.stringify(promptsArr.map((p) => p.text)),
-      );
-      formData.append("evaluation_data", JSON.stringify(evalData));
+
+      // Use internal prompt template (not from PromptNode)
+      formData.append("initial_prompts", JSON.stringify([promptText]));
+      formData.append("test_dataset", JSON.stringify(testDataset));
+
+      // LLM configuration from LLMListComponent
+      formData.append("llm_provider", llmProvider);
+      formData.append("llm_model", llmModel);
+      formData.append("llm_params", JSON.stringify(llmParams));
 
       // Add all settings
       formData.append("population_size", String(populationSize));
@@ -288,6 +406,8 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
     }
   }, [
     id,
+    promptText,
+    llmItemsCurrState,
     populationSize,
     numGenerations,
     mutationRate,
@@ -313,19 +433,52 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
     }
   };
 
+  // Preview function to show rendered prompts
+  const showPromptPreview = useCallback(() => {
+    try {
+      const inputData = pullInputData(["input"], id);
+      const inputColumn = inputData.input || [];
+
+      if (!promptText || promptText.trim() === "") {
+        showAlert?.("Enter a prompt template first");
+        return;
+      }
+
+      if (inputColumn.length === 0) {
+        showAlert?.("Connect TabularDataNode with 'input' column first");
+        return;
+      }
+
+      // Render prompt template with first 3 test cases
+      const previews = inputColumn.slice(0, 3).map((item: any) => {
+        const inputValue =
+          typeof item === "object" && "text" in item ? item.text : item;
+        // Simple template variable replacement
+        return promptText.replace(/\{input\}/g, inputValue);
+      });
+
+      setPreviewPrompts(previews);
+      setShowPreview(true);
+    } catch (error) {
+      console.error("Preview error:", error);
+      showAlert?.("Could not generate preview. Connect TabularDataNode first.");
+    }
+  }, [id, promptText, pullInputData, showAlert]);
+
   return (
     <BaseNode nodeId={id} classNames="optimizer-node">
+      {/* Input handles for test data only (no prompts handle) */}
       <Handle
         type="target"
         position={Position.Left}
-        id="prompts"
-        style={{ top: "30%" }}
+        id="input"
+        style={{ top: "50%" }}
       />
       <Handle
         type="target"
         position={Position.Left}
-        id="eval_data"
-        style={{ top: "70%" }}
+        id="label"
+        style={{ top: "75%" }}
       />
 
       <NodeLabel
@@ -338,6 +491,55 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
       />
 
       <Stack spacing="xs" p="sm">
+        {/* Prompt Template Editor */}
+        <Divider label="Prompt Template" labelPosition="center" />
+        <Textarea
+          placeholder="Enter your prompt template with {input} variable..."
+          value={promptText}
+          onChange={onPromptTextChange}
+          minRows={4}
+          maxRows={8}
+          autosize
+          styles={{
+            input: {
+              fontSize: "11pt",
+              fontFamily: "monospace",
+            },
+          }}
+        />
+
+        {/* Template Variables */}
+        {templateVars.length > 0 && (
+          <TemplateHooks
+            vars={templateVars}
+            nodeId={id}
+            startY={0}
+            position={Position.Left}
+          />
+        )}
+
+        {/* LLM Configuration */}
+        <Divider label="LLM Configuration" labelPosition="center" mt="sm" />
+        <LLMListContainer
+          ref={llmListContainer}
+          initLLMItems={data.llms || []}
+          onItemsChange={onLLMListItemsChange}
+        />
+
+        {/* Preview Button */}
+        <Button
+          size="xs"
+          variant="light"
+          leftIcon={<IconEye size={14} />}
+          onClick={showPromptPreview}
+          disabled={status === Status.LOADING}
+        >
+          Preview Rendered Prompts
+        </Button>
+
+        {/* Optimization Settings */}
+        <Divider label="Optimization Settings" labelPosition="center" mt="sm" />
+
         <Group position="apart">
           <Text size="sm" weight={500}>
             Population Size
@@ -542,6 +744,30 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
         ref={inspectorRef}
         jsonResponses={jsonResponses}
       />
+
+      {/* Preview Modal */}
+      <Modal
+        opened={showPreview}
+        onClose={() => setShowPreview(false)}
+        title="Rendered Prompt Preview"
+        size="lg"
+      >
+        <Stack>
+          <Text size="sm" c="dimmed">
+            Showing first {previewPrompts.length} rendered prompts:
+          </Text>
+          {previewPrompts.map((prompt, idx) => (
+            <Paper key={idx} p="sm" withBorder>
+              <Text size="xs" fw={500} c="dimmed">
+                Test Case {idx + 1}:
+              </Text>
+              <Code block mt="xs">
+                {prompt}
+              </Code>
+            </Paper>
+          ))}
+        </Stack>
+      </Modal>
 
       <Handle
         type="source"

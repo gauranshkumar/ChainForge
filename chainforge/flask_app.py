@@ -1950,14 +1950,17 @@ def proxy_image():
 
 # === Optimizer Endpoint ===
 @app.route("/optimize", methods=["POST"])
-def optimize():
+async def optimize():
     """
     Run prompt optimization using evolutionary algorithms.
 
     Expected form data:
     - method: The optimizer method identifier (e.g., "evolutionary_algorithm")
-    - initial_prompts: JSON array of initial prompt strings
-    - evaluation_data: JSON array of evaluation data (for fitness calculation)
+    - initial_prompts: JSON array of initial prompt template strings
+    - test_dataset: JSON array of test cases with input/label pairs
+    - llm_provider: LLM provider name (e.g., "OpenAI", "Anthropic")
+    - llm_model: Model name (e.g., "gpt-4", "claude-3-5-sonnet-20240620")
+    - llm_params: JSON object with LLM parameters (temperature, max_tokens, etc.)
     - population_size: Population size (default: 10)
     - num_generations: Number of generations (default: 5)
     - mutation_rate: Mutation probability (default: 0.3)
@@ -1983,13 +1986,22 @@ def optimize():
 
     method = request.form.get("method")
     initial_prompts_json = request.form.get("initial_prompts")
-    evaluation_data_json = request.form.get("evaluation_data")
+    test_dataset_json = request.form.get("test_dataset")
+    llm_provider = request.form.get("llm_provider")
+    llm_model = request.form.get("llm_model")
+    llm_params_json = request.form.get("llm_params", "{}")
 
+    # Validate required fields
     if not method:
         return jsonify({"error": "Missing 'method' in form data"}), 400
     if not initial_prompts_json:
         return jsonify({"error": "Missing 'initial_prompts' in form data"}), 400
+    if not test_dataset_json:
+        return jsonify({"error": "Missing 'test_dataset' in form data"}), 400
+    if not llm_provider:
+        return jsonify({"error": "Missing 'llm_provider' in form data"}), 400
 
+    # Parse initial prompts (templates)
     try:
         initial_prompts = json.loads(initial_prompts_json)
         if not isinstance(initial_prompts, list):
@@ -1997,15 +2009,35 @@ def optimize():
     except (json.JSONDecodeError, ValueError) as e:
         return jsonify({"error": f"Invalid JSON in initial_prompts: {e}"}), 400
 
-    # Parse evaluation data if provided
-    evaluation_data = []
-    if evaluation_data_json:
-        try:
-            evaluation_data = json.loads(evaluation_data_json)
-            if not isinstance(evaluation_data, list):
-                return jsonify({"error": "evaluation_data must be a JSON array"}), 400
-        except (json.JSONDecodeError, ValueError) as e:
-            return jsonify({"error": f"Invalid JSON in evaluation_data: {e}"}), 400
+    # Parse test dataset (from TabularDataNode format)
+    # Format: [{text: "...", metavars: {label: "..."}, associate_id: "..."}, ...]
+    try:
+        test_dataset_raw = json.loads(test_dataset_json)
+        if not isinstance(test_dataset_raw, list):
+            return jsonify({"error": "test_dataset must be a JSON array"}), 400
+
+        # Convert from TabularDataNode format to {input, label} format
+        test_dataset = []
+        for item in test_dataset_raw:
+            if isinstance(item, dict) and "text" in item and "metavars" in item:
+                # TabularDataNode format: {text: input_value, metavars: {label: label_value}}
+                test_case = {"input": item["text"]}
+                # Add all metavars as additional fields (including label)
+                test_case.update(item.get("metavars", {}))
+                test_dataset.append(test_case)
+            else:
+                # Already in correct format: {input: "...", label: "..."}
+                test_dataset.append(item)
+    except (json.JSONDecodeError, ValueError) as e:
+        return jsonify({"error": f"Invalid JSON in test_dataset: {e}"}), 400
+
+    # Parse LLM parameters
+    try:
+        llm_params = json.loads(llm_params_json)
+        if not isinstance(llm_params, dict):
+            return jsonify({"error": "llm_params must be a JSON object"}), 400
+    except (json.JSONDecodeError, ValueError) as e:
+        return jsonify({"error": f"Invalid JSON in llm_params: {e}"}), 400
 
     # Get the optimizer handler
     try:
@@ -2016,6 +2048,13 @@ def optimize():
     if not handler:
         return jsonify({"error": f"Unsupported optimizer method: {method}"}), 400
 
+    # Get provider function
+    provider_spec = ProviderRegistry.get(llm_provider)
+    if provider_spec is None:
+        return jsonify({"error": f"Could not find provider named {llm_provider}. Check your LLM provider configuration."}), 400
+
+    provider_func = provider_spec.get('func')
+
     # Extract settings from form data
     settings = {}
     known_int_params = {"population_size", "num_generations", "tournament_size", "elitism_count"}
@@ -2023,7 +2062,7 @@ def optimize():
     known_str_params = {"selection_method", "fitness_metric", "neo4j_uri", "neo4j_user", "neo4j_password"}
 
     for key, value in request.form.items():
-        if key not in ["method", "initial_prompts", "evaluation_data"]:
+        if key not in ["method", "initial_prompts", "test_dataset", "llm_provider", "llm_model", "llm_params"]:
             try:
                 if key in known_int_params:
                     settings[key] = int(value)
@@ -2037,47 +2076,105 @@ def optimize():
                 print(f"Warning: Could not convert setting '{key}' with value '{value}'. Using raw value.", file=sys.stderr)
                 settings[key] = value
 
-    # Create evaluation function that returns evaluation data for a prompt
-    # The evaluation_data comes from an EvaluatorNode and already contains
-    # eval_res with true and predicted labels for the initial prompts
-    def evaluation_function(prompt):
+    # Helper function to render template with variables
+    def render_template(template: str, vars: dict) -> str:
+        """Render a prompt template with variables."""
+        result = template
+        for key, value in vars.items():
+            result = result.replace(f"{{{key}}}", str(value))
+        return result
+
+    # Helper function to extract label from LLM response
+    def extract_label(llm_response: str, valid_labels: list = None) -> str:
         """
-        Return evaluation results for a given prompt.
+        Extract classification label from LLM response.
 
-        The evaluation_data should come from ChainForge's EvaluatorNode and contain
-        evaluation results in the format expected by parse_predictions:
+        Strategies:
+        1. Look for exact label match (case-insensitive)
+        2. Look for label in last line
+        3. Extract from "Answer: X" or "Label: X" format
+        4. First word matching valid_labels
+        """
+        response = llm_response.strip().lower()
 
-        [
-            {
-                "text": "response text",
-                "prompt": "the prompt used",
+        # Try exact match with valid labels
+        if valid_labels:
+            for label in valid_labels:
+                if label.lower() in response:
+                    return label
+
+        # Extract last non-empty line
+        lines = response.split('\n')
+        for line in reversed(lines):
+            line = line.strip()
+            if line:
+                # Check for "Answer: X" or "Label: X" format
+                if ':' in line:
+                    parts = line.split(':', 1)
+                    if len(parts) == 2:
+                        return parts[1].strip()
+                return line
+
+        return response
+
+    # Create evaluation function that renders templates and calls LLM
+    async def evaluation_function(prompt_template):
+        """
+        Evaluate a prompt template against test dataset.
+
+        For each test case:
+        1. Render template with test input
+        2. Call LLM with rendered prompt
+        3. Parse LLM response
+        4. Compare with ground truth
+
+        Returns evaluation results in format expected by parse_predictions.
+        """
+        results = []
+
+        # Extract valid labels from test dataset
+        valid_labels = list(set(test_case.get("label") for test_case in test_dataset if "label" in test_case))
+
+        for test_case in test_dataset:
+            # 1. Render template with test input
+            rendered_prompt = render_template(prompt_template, test_case)
+
+            # 2. Call LLM
+            try:
+                llm_response = await make_sync_call_async(
+                    provider_func,
+                    prompt=rendered_prompt,
+                    model=llm_model,
+                    chat_history=None,
+                    **llm_params
+                )
+            except Exception as e:
+                print(f"Error calling LLM for prompt: {e}", file=sys.stderr)
+                llm_response = ""
+
+            # 3. Parse response to extract prediction
+            predicted_label = extract_label(llm_response, valid_labels)
+
+            # 4. Store result in format expected by parse_predictions
+            results.append({
+                "text": llm_response,
+                "prompt": rendered_prompt,
                 "eval_res": {
-                    "items": [
-                        {"true": "label1", "pred": "label2"},
-                        ...
-                    ]
+                    "items": [{
+                        "true": test_case.get("label", ""),
+                        "pred": predicted_label
+                    }]
                 }
-            },
-            ...
-        ]
+            })
 
-        For the evolutionary algorithm, we simply return the evaluation_data as-is.
-        Each individual's fitness will be calculated from parse_predictions(eval_results).
-
-        Note: In a real implementation, you would:
-        1. Format the prompt with test inputs
-        2. Call an LLM with the formatted prompt
-        3. Extract predictions from LLM responses
-        4. Compare with ground truth labels
-        5. Return in the format above
-
-        For now, this returns the pre-computed evaluation data.
-        """
-        return evaluation_data
+        return results
 
     try:
-        # Call the optimizer handler
-        result = handler(initial_prompts, evaluation_function, settings)
+        # Call the optimizer handler (may be async)
+        if asyncio.iscoroutinefunction(handler):
+            result = await handler(initial_prompts, evaluation_function, settings)
+        else:
+            result = handler(initial_prompts, evaluation_function, settings)
         return jsonify(result), 200
 
     except ValueError as ve:

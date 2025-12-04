@@ -2,6 +2,8 @@
 from typing import List, Dict, Any, Optional, Tuple, Callable
 import numpy as np
 import random
+import asyncio
+import inspect
 from chainforge.optimizers.protocol import OptimizerRegistry
 from chainforge.optimizers.utils import (
     calculate_fitness,
@@ -392,7 +394,7 @@ def simple_word_mutation(prompt: str, mutation_rate: float = 0.3) -> str:
 
 
 @OptimizerRegistry.register("evolutionary_algorithm")
-def evolutionary_algorithm_optimizer(
+async def evolutionary_algorithm_optimizer(
     initial_prompts: List[str],
     evaluation_function: Callable,
     settings: Dict[str, Any]
@@ -402,7 +404,7 @@ def evolutionary_algorithm_optimizer(
 
     Args:
         initial_prompts: List of initial prompt strings
-        evaluation_function: Function that takes a prompt and returns evaluation results
+        evaluation_function: Function (sync or async) that takes a prompt and returns evaluation results
         settings: Configuration dict with:
             - population_size: int (default: 10)
             - num_generations: int (default: 5)
@@ -461,6 +463,9 @@ def evolutionary_algorithm_optimizer(
     best_individual = None
     best_fitness = float('-inf')
 
+    # Check if evaluation_function is async
+    is_async_eval = asyncio.iscoroutinefunction(evaluation_function)
+
     # Main evolutionary loop
     for generation in range(num_generations):
         print(f"Generation {generation + 1}/{num_generations}")
@@ -468,7 +473,10 @@ def evolutionary_algorithm_optimizer(
         # Evaluate population
         for individual in population:
             # Get evaluation results from the evaluation function
-            eval_results = evaluation_function(individual.prompt)
+            if is_async_eval:
+                eval_results = await evaluation_function(individual.prompt)
+            else:
+                eval_results = evaluation_function(individual.prompt)
             individual.evaluation_results = eval_results
 
             # Parse predictions and calculate fitness
