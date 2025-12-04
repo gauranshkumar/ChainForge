@@ -12,6 +12,8 @@ import {
   Text,
   Stack,
   TextInput,
+  Card,
+  Badge,
   Accordion,
   Group,
   Switch,
