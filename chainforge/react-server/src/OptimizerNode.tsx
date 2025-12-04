@@ -563,27 +563,21 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
       <Stack spacing="xs" p="sm">
         {/* Prompt Template Editor */}
         <Divider label="Prompt Template" labelPosition="center" />
-        <div
-          className="nodrag"
-          onMouseDown={stopPropagation}
-          onPointerDown={stopPropagation}
-          onWheel={stopPropagation}
-        >
-          <Textarea
-            placeholder="Enter your prompt template with {input} variable..."
-            value={promptText}
-            onChange={onPromptTextChange}
-            minRows={4}
-            maxRows={8}
-            autosize
-            styles={{
-              input: {
-                fontSize: "11pt",
-                fontFamily: "monospace",
-              },
-            }}
-          />
-        </div>
+        <Textarea
+          className="nodrag nowheel"
+          placeholder="Enter your prompt template with {input} variable..."
+          value={promptText}
+          onChange={onPromptTextChange}
+          minRows={4}
+          maxRows={8}
+          autosize
+          styles={{
+            input: {
+              fontSize: "11pt",
+              fontFamily: "monospace",
+            },
+          }}
+        />
 
         {/* Template Variables */}
         {templateVars.length > 0 && (
@@ -830,35 +824,53 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
         </div>
 
         {bestPrompt && (
-          <Stack mt="md" spacing="xs">
-            <Text size="sm" weight={700} color="green">
-              Best Fitness: {bestFitness.toFixed(4)}
-            </Text>
-            <Divider label="Best Prompt Template" labelPosition="center" />
-            <Text size="xs" color="dimmed" style={{ fontFamily: "monospace" }}>
-              {bestPrompt.substring(0, 100)}
-              {bestPrompt.length > 100 ? "..." : ""}
-            </Text>
-            {renderedPrompts.length > 0 && (
-              <>
-                <Divider
-                  label="Rendered Examples"
-                  labelPosition="center"
-                  mt="xs"
-                />
-                {renderedPrompts.map((rendered, idx) => (
-                  <Paper key={idx} p="xs" withBorder>
-                    <Text size="xs" fw={500} c="dimmed" mb={4}>
-                      Example {idx + 1}:
-                    </Text>
-                    <Code block style={{ fontSize: "10px" }}>
-                      {rendered}
-                    </Code>
-                  </Paper>
-                ))}
-              </>
-            )}
-          </Stack>
+          <Card shadow="sm" p="sm" radius="md" withBorder mt="md">
+            <Card.Section withBorder inheritPadding py="xs">
+              <Group position="apart">
+                <Text weight={500} size="sm">
+                  Optimization Result
+                </Text>
+                <Badge color="green" variant="light">
+                  Fitness: {bestFitness.toFixed(4)}
+                </Badge>
+              </Group>
+            </Card.Section>
+
+            <Stack mt="sm" spacing="xs">
+              <Text size="xs" weight={500} color="dimmed">
+                Best Prompt Template:
+              </Text>
+              <Code block style={{ fontSize: "10px", maxHeight: "150px", overflowY: "auto" }}>
+                {bestPrompt}
+              </Code>
+
+              {renderedPrompts.length > 0 && (
+                <Accordion variant="contained" mt="xs">
+                  <Accordion.Item value="examples">
+                    <Accordion.Control style={{ padding: "8px" }}>
+                      <Text size="xs" color="dimmed">
+                        View Rendered Examples ({renderedPrompts.length})
+                      </Text>
+                    </Accordion.Control>
+                    <Accordion.Panel>
+                      <Stack spacing="xs">
+                        {renderedPrompts.map((rendered, idx) => (
+                          <Paper key={idx} p="xs" withBorder bg="gray.0">
+                            <Text size="xs" fw={500} c="dimmed" mb={4}>
+                              Example {idx + 1}:
+                            </Text>
+                            <Code block style={{ fontSize: "10px" }}>
+                              {rendered}
+                            </Code>
+                          </Paper>
+                        ))}
+                      </Stack>
+                    </Accordion.Panel>
+                  </Accordion.Item>
+                </Accordion>
+              )}
+            </Stack>
+          </Card>
         )}
 
         {/* View Results Button */}
