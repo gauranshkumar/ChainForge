@@ -82,6 +82,7 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
   const [jsonResponses, setJSONResponses] = useState<LLMResponse[]>([]);
   const [bestPrompt, setBestPrompt] = useState<string>("");
   const [bestFitness, setBestFitness] = useState<number>(0);
+  const [avgFitness, setAvgFitness] = useState<number>(0);
   const [renderedPrompts, setRenderedPrompts] = useState<string[]>([]);
 
   // Optimizer settings
@@ -376,6 +377,7 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
       // Store results
       setBestPrompt(result.best_prompt);
       setBestFitness(result.best_fitness);
+      setAvgFitness(result.avg_fitness || 0);
 
       // Render the best prompt with test data examples
       const rendered = testDataset.slice(0, 3).map((item: any) => {
@@ -385,62 +387,27 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
       });
       setRenderedPrompts(rendered);
 
-      // Create responses for inspector
+      // Create responses for inspector - only include the best prompt
       const responses: LLMResponse[] = [];
 
-      // Add best prompt template
+      // Add only the best prompt template
       responses.push({
         uid: uuid(),
-        prompt: "Best Optimized Prompt Template",
+        prompt: "Best Optimized Prompt",
         vars: {
           fitness: result.best_fitness,
           metric: fitnessMetric,
+          generations: numGenerations,
+          population_size: populationSize,
         },
         responses: [result.best_prompt],
         llm: "Evolutionary Optimizer",
         metavars: {
           best_fitness: result.best_fitness,
           fitness_metric: fitnessMetric,
+          num_generations: numGenerations,
+          population_size: populationSize,
         },
-      });
-
-      // Add rendered examples
-      rendered.forEach((renderedPrompt: string, idx: number) => {
-        responses.push({
-          uid: uuid(),
-          prompt: `Rendered Example ${idx + 1}`,
-          vars: {
-            test_case: idx + 1,
-            input: testDataset[idx].text,
-          },
-          responses: [renderedPrompt],
-          llm: "Evolutionary Optimizer",
-          metavars: {
-            best_fitness: result.best_fitness,
-            fitness_metric: fitnessMetric,
-            example_number: idx + 1,
-          },
-        });
-      });
-
-      // Add generation history
-      result.history?.forEach((gen: any) => {
-        responses.push({
-          uid: uuid(),
-          prompt: `Generation ${gen.generation}`,
-          vars: {
-            generation: gen.generation,
-            best_fitness: gen.best_fitness,
-            avg_fitness: gen.avg_fitness,
-          },
-          responses: [gen.best_prompt],
-          llm: "Evolutionary Optimizer",
-          metavars: {
-            generation: gen.generation,
-            best_fitness: gen.best_fitness,
-            avg_fitness: gen.avg_fitness,
-          },
-        });
       });
 
       setJSONResponses(responses);
@@ -538,7 +505,16 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
   }, [id, promptText, pullInputData, showAlert]);
 
   return (
-    <BaseNode nodeId={id} classNames="optimizer-node">
+    <BaseNode
+      nodeId={id}
+      classNames="optimizer-node"
+      style={{
+        resize: "both",
+        overflow: "auto",
+        minWidth: "350px",
+        minHeight: "400px",
+      }}
+    >
       {/* Input handles for test data only (no prompts handle) */}
       <Handle
         type="target"
@@ -828,50 +804,20 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
         {bestPrompt && (
           <Card shadow="sm" p="sm" radius="md" withBorder mt="md">
             <Card.Section withBorder inheritPadding py="xs">
-              <Group position="apart">
+              <Group position="center" spacing="md">
                 <Text weight={500} size="sm">
-                  Optimization Result
+                  Optimization Complete
                 </Text>
-                <Badge color="green" variant="light">
-                  Fitness: {bestFitness.toFixed(4)}
-                </Badge>
               </Group>
             </Card.Section>
-
-            <Stack mt="sm" spacing="xs">
-              <Text size="xs" weight={500} color="dimmed">
-                Best Prompt Template:
-              </Text>
-              <Code block style={{ fontSize: "10px", maxHeight: "150px", overflowY: "auto" }}>
-                {bestPrompt}
-              </Code>
-
-              {renderedPrompts.length > 0 && (
-                <Accordion variant="contained" mt="xs">
-                  <Accordion.Item value="examples">
-                    <Accordion.Control style={{ padding: "8px" }}>
-                      <Text size="xs" color="dimmed">
-                        View Rendered Examples ({renderedPrompts.length})
-                      </Text>
-                    </Accordion.Control>
-                    <Accordion.Panel>
-                      <Stack spacing="xs">
-                        {renderedPrompts.map((rendered, idx) => (
-                          <Paper key={idx} p="xs" withBorder bg="gray.0">
-                            <Text size="xs" fw={500} c="dimmed" mb={4}>
-                              Example {idx + 1}:
-                            </Text>
-                            <Code block style={{ fontSize: "10px" }}>
-                              {rendered}
-                            </Code>
-                          </Paper>
-                        ))}
-                      </Stack>
-                    </Accordion.Panel>
-                  </Accordion.Item>
-                </Accordion>
-              )}
-            </Stack>
+            <Group position="center" spacing="lg" mt="sm">
+              <Badge size="lg" color="green" variant="filled">
+                Best: {bestFitness.toFixed(4)}
+              </Badge>
+              <Badge size="lg" color="blue" variant="light">
+                Avg: {avgFitness.toFixed(4)}
+              </Badge>
+            </Group>
           </Card>
         )}
 
