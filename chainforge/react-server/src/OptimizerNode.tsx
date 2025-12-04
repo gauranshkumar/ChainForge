@@ -78,9 +78,9 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
 
   const [status, setStatus] = useState<Status>(Status.NONE);
   const [jsonResponses, setJSONResponses] = useState<LLMResponse[]>([]);
-  const [optimizationHistory, setOptimizationHistory] = useState<any[]>([]);
   const [bestPrompt, setBestPrompt] = useState<string>("");
   const [bestFitness, setBestFitness] = useState<number>(0);
+  const [renderedPrompts, setRenderedPrompts] = useState<string[]>([]);
 
   // Optimizer settings
   const [populationSize, setPopulationSize] = useState(
@@ -126,15 +126,22 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
 
   const inspectorRef = useRef<LLMResponseInspectorModalRef>(null);
 
+  // Prevent node dragging when interacting with inputs
+  const stopPropagation = (
+    e: React.MouseEvent | React.PointerEvent | React.WheelEvent,
+  ) => {
+    e.stopPropagation();
+  };
+
   // On refresh
   useEffect(() => {
     if (data.refresh) {
       setDataPropsForNode(id, { refresh: false });
       setJSONResponses([]);
       setStatus(Status.NONE);
-      setOptimizationHistory([]);
       setBestPrompt("");
       setBestFitness(0);
+      setRenderedPrompts([]);
     }
   }, [data.refresh, id, setDataPropsForNode]);
 
@@ -269,7 +276,6 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
 
     setStatus(Status.LOADING);
     setJSONResponses([]);
-    setOptimizationHistory([]);
 
     try {
       // Extract LLM configuration from first LLM in list
@@ -280,11 +286,56 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
       // Extract settings from LLM spec
       const llmParams: any = llm.settings || {};
 
+      // Generate initial diverse prompts by creating variations
+      const generateInitialVariations = (
+        basePrompt: string,
+        count = 5,
+      ): string[] => {
+        const variations = [basePrompt];
+
+        // Create variations by adding/modifying instructions
+        const prefixes = [
+          "Carefully ",
+          "Accurately ",
+          "Precisely ",
+          "Thoroughly ",
+          "",
+        ];
+
+        const suffixes = [
+          " Be concise.",
+          " Provide detailed reasoning.",
+          " Think step by step.",
+          " Explain your answer.",
+          "",
+        ];
+
+        // Generate variations
+        for (
+          let i = 1;
+          i < count && i < prefixes.length * suffixes.length;
+          i++
+        ) {
+          const prefixIdx = i % prefixes.length;
+          const suffixIdx = Math.floor(i / prefixes.length) % suffixes.length;
+          const variation =
+            prefixes[prefixIdx] + basePrompt + suffixes[suffixIdx];
+          variations.push(variation);
+        }
+
+        return variations.slice(0, count);
+      };
+
+      const initialPrompts = generateInitialVariations(
+        promptText,
+        populationSize,
+      );
+
       const formData = new FormData();
       formData.append("method", "evolutionary_algorithm");
 
-      // Use internal prompt template (not from PromptNode)
-      formData.append("initial_prompts", JSON.stringify([promptText]));
+      // Use diverse initial prompts
+      formData.append("initial_prompts", JSON.stringify(initialPrompts));
       formData.append("test_dataset", JSON.stringify(testDataset));
 
       // LLM configuration from LLMListComponent
@@ -323,15 +374,22 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
       // Store results
       setBestPrompt(result.best_prompt);
       setBestFitness(result.best_fitness);
-      setOptimizationHistory(result.history || []);
+
+      // Render the best prompt with test data examples
+      const rendered = testDataset.slice(0, 3).map((item: any) => {
+        const inputValue = item.text;
+        // Simple template variable replacement
+        return result.best_prompt.replace(/\{input\}/g, inputValue);
+      });
+      setRenderedPrompts(rendered);
 
       // Create responses for inspector
       const responses: LLMResponse[] = [];
 
-      // Add best prompt
+      // Add best prompt template
       responses.push({
         uid: uuid(),
-        prompt: "Best Optimized Prompt",
+        prompt: "Best Optimized Prompt Template",
         vars: {
           fitness: result.best_fitness,
           metric: fitnessMetric,
@@ -344,8 +402,27 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
         },
       });
 
+      // Add rendered examples
+      rendered.forEach((renderedPrompt: string, idx: number) => {
+        responses.push({
+          uid: uuid(),
+          prompt: `Rendered Example ${idx + 1}`,
+          vars: {
+            test_case: idx + 1,
+            input: testDataset[idx].text,
+          },
+          responses: [renderedPrompt],
+          llm: "Evolutionary Optimizer",
+          metavars: {
+            best_fitness: result.best_fitness,
+            fitness_metric: fitnessMetric,
+            example_number: idx + 1,
+          },
+        });
+      });
+
       // Add generation history
-      result.history?.forEach((gen: any, idx: number) => {
+      result.history?.forEach((gen: any) => {
         responses.push({
           uid: uuid(),
           prompt: `Generation ${gen.generation}`,
@@ -365,6 +442,9 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
       });
 
       setJSONResponses(responses);
+      console.log(
+        `OptimizerNode: Created ${responses.length} responses for inspection`,
+      );
 
       // Output the best prompt for downstream nodes
       const outputData: TemplateVarInfo = {
@@ -483,20 +563,27 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
       <Stack spacing="xs" p="sm">
         {/* Prompt Template Editor */}
         <Divider label="Prompt Template" labelPosition="center" />
-        <Textarea
-          placeholder="Enter your prompt template with {input} variable..."
-          value={promptText}
-          onChange={onPromptTextChange}
-          minRows={4}
-          maxRows={8}
-          autosize
-          styles={{
-            input: {
-              fontSize: "11pt",
-              fontFamily: "monospace",
-            },
-          }}
-        />
+        <div
+          className="nodrag"
+          onMouseDown={stopPropagation}
+          onPointerDown={stopPropagation}
+          onWheel={stopPropagation}
+        >
+          <Textarea
+            placeholder="Enter your prompt template with {input} variable..."
+            value={promptText}
+            onChange={onPromptTextChange}
+            minRows={4}
+            maxRows={8}
+            autosize
+            styles={{
+              input: {
+                fontSize: "11pt",
+                fontFamily: "monospace",
+              },
+            }}
+          />
+        </div>
 
         {/* Template Variables */}
         {templateVars.length > 0 && (
@@ -510,11 +597,18 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
 
         {/* LLM Configuration */}
         <Divider label="LLM Configuration" labelPosition="center" mt="sm" />
-        <LLMListContainer
-          ref={llmListContainer}
-          initLLMItems={data.llms || []}
-          onItemsChange={onLLMListItemsChange}
-        />
+        <div
+          className="nodrag"
+          onMouseDown={stopPropagation}
+          onPointerDown={stopPropagation}
+          onWheel={stopPropagation}
+        >
+          <LLMListContainer
+            ref={llmListContainer}
+            initLLMItems={data.llms || []}
+            onItemsChange={onLLMListItemsChange}
+          />
+        </div>
 
         {/* Preview Button */}
         <Button
@@ -529,188 +623,257 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
 
         {/* Optimization Settings */}
         <Divider label="Optimization Settings" labelPosition="center" mt="sm" />
-
-        <Group position="apart">
-          <Text size="sm" weight={500}>
-            Population Size
-          </Text>
-          <NumberInput
-            value={populationSize}
-            onChange={(val) =>
-              typeof val === "number" && setPopulationSize(val)
-            }
-            min={2}
-            max={100}
-            size="xs"
-            w={80}
-          />
-        </Group>
-
-        <Group position="apart">
-          <Text size="sm" weight={500}>
-            Generations
-          </Text>
-          <NumberInput
-            value={numGenerations}
-            onChange={(val) =>
-              typeof val === "number" && setNumGenerations(val)
-            }
-            min={1}
-            max={50}
-            size="xs"
-            w={80}
-          />
-        </Group>
-
-        <Group position="apart">
-          <Text size="sm" weight={500}>
-            Mutation Rate
-          </Text>
-          <NumberInput
-            value={mutationRate}
-            onChange={(val) => typeof val === "number" && setMutationRate(val)}
-            min={0}
-            max={1}
-            step={0.1}
-            precision={2}
-            size="xs"
-            w={80}
-          />
-        </Group>
-
-        <Group position="apart">
-          <Text size="sm" weight={500}>
-            Crossover Rate
-          </Text>
-          <NumberInput
-            value={crossoverRate}
-            onChange={(val) => typeof val === "number" && setCrossoverRate(val)}
-            min={0}
-            max={1}
-            step={0.1}
-            precision={2}
-            size="xs"
-            w={80}
-          />
-        </Group>
-
-        <Group position="apart">
-          <Text size="sm" weight={500}>
-            Fitness Metric
-          </Text>
-          <NativeSelect
-            value={fitnessMetric}
-            onChange={(e) => setFitnessMetric(e.target.value)}
-            data={[
-              { value: "mcc", label: "MCC" },
-              { value: "balanced_accuracy", label: "Balanced Accuracy" },
-            ]}
-            size="xs"
-            w={150}
-          />
-        </Group>
-
-        <Group position="apart">
-          <Text size="sm" weight={500}>
-            Selection Method
-          </Text>
-          <NativeSelect
-            value={selectionMethod}
-            onChange={(e) => setSelectionMethod(e.target.value)}
-            data={[
-              { value: "tournament", label: "Tournament" },
-              { value: "roulette", label: "Roulette Wheel" },
-            ]}
-            size="xs"
-            w={150}
-          />
-        </Group>
-
-        {selectionMethod === "tournament" && (
+        <div
+          className="nodrag"
+          onMouseDown={stopPropagation}
+          onPointerDown={stopPropagation}
+          onWheel={stopPropagation}
+        >
           <Group position="apart">
             <Text size="sm" weight={500}>
-              Tournament Size
+              Population Size
             </Text>
             <NumberInput
-              value={tournamentSize}
+              value={populationSize}
               onChange={(val) =>
-                typeof val === "number" && setTournamentSize(val)
+                typeof val === "number" && setPopulationSize(val)
               }
               min={2}
+              max={100}
+              size="xs"
+              w={80}
+              onMouseDown={stopPropagation}
+              onPointerDown={stopPropagation}
+            />
+          </Group>
+
+          <Group position="apart">
+            <Text size="sm" weight={500}>
+              Generations
+            </Text>
+            <NumberInput
+              value={numGenerations}
+              onChange={(val) =>
+                typeof val === "number" && setNumGenerations(val)
+              }
+              min={1}
+              max={50}
+              size="xs"
+              w={80}
+              onMouseDown={stopPropagation}
+              onPointerDown={stopPropagation}
+            />
+          </Group>
+
+          <Group position="apart">
+            <Text size="sm" weight={500}>
+              Mutation Rate
+            </Text>
+            <NumberInput
+              value={mutationRate}
+              onChange={(val) =>
+                typeof val === "number" && setMutationRate(val)
+              }
+              min={0}
+              max={1}
+              step={0.1}
+              precision={2}
+              size="xs"
+              w={80}
+              onMouseDown={stopPropagation}
+              onPointerDown={stopPropagation}
+            />
+          </Group>
+
+          <Group position="apart">
+            <Text size="sm" weight={500}>
+              Crossover Rate
+            </Text>
+            <NumberInput
+              value={crossoverRate}
+              onChange={(val) =>
+                typeof val === "number" && setCrossoverRate(val)
+              }
+              min={0}
+              max={1}
+              step={0.1}
+              precision={2}
+              size="xs"
+              w={80}
+              onMouseDown={stopPropagation}
+              onPointerDown={stopPropagation}
+            />
+          </Group>
+
+          <Group position="apart">
+            <Text size="sm" weight={500}>
+              Fitness Metric
+            </Text>
+            <NativeSelect
+              value={fitnessMetric}
+              onChange={(e) => setFitnessMetric(e.target.value)}
+              data={[
+                { value: "mcc", label: "MCC" },
+                { value: "balanced_accuracy", label: "Balanced Accuracy" },
+              ]}
+              size="xs"
+              w={150}
+              onMouseDown={stopPropagation}
+              onPointerDown={stopPropagation}
+            />
+          </Group>
+
+          <Group position="apart">
+            <Text size="sm" weight={500}>
+              Selection Method
+            </Text>
+            <NativeSelect
+              value={selectionMethod}
+              onChange={(e) => setSelectionMethod(e.target.value)}
+              data={[
+                { value: "tournament", label: "Tournament" },
+                { value: "roulette", label: "Roulette Wheel" },
+              ]}
+              size="xs"
+              w={150}
+              onMouseDown={stopPropagation}
+              onPointerDown={stopPropagation}
+            />
+          </Group>
+
+          {selectionMethod === "tournament" && (
+            <Group position="apart">
+              <Text size="sm" weight={500}>
+                Tournament Size
+              </Text>
+              <NumberInput
+                value={tournamentSize}
+                onChange={(val) =>
+                  typeof val === "number" && setTournamentSize(val)
+                }
+                min={2}
+                max={10}
+                size="xs"
+                w={80}
+                onMouseDown={stopPropagation}
+                onPointerDown={stopPropagation}
+              />
+            </Group>
+          )}
+
+          <Group position="apart">
+            <Text size="sm" weight={500}>
+              Elitism Count
+            </Text>
+            <NumberInput
+              value={elitismCount}
+              onChange={(val) =>
+                typeof val === "number" && setElitismCount(val)
+              }
+              min={0}
               max={10}
               size="xs"
               w={80}
+              onMouseDown={stopPropagation}
+              onPointerDown={stopPropagation}
             />
           </Group>
-        )}
 
-        <Group position="apart">
-          <Text size="sm" weight={500}>
-            Elitism Count
-          </Text>
-          <NumberInput
-            value={elitismCount}
-            onChange={(val) => typeof val === "number" && setElitismCount(val)}
-            min={0}
-            max={10}
-            size="xs"
-            w={80}
-          />
-        </Group>
-
-        <Accordion mt="md">
-          <Accordion.Item value="neo4j">
-            <Accordion.Control>
-              <Group>
-                <Switch
-                  checked={useNeo4j}
-                  onChange={(e) => setUseNeo4j(e.currentTarget.checked)}
-                  label="Neo4j Mutation"
-                  size="sm"
-                />
-              </Group>
-            </Accordion.Control>
-            <Accordion.Panel>
-              <Stack spacing="xs">
-                <TextInput
-                  label="Neo4j URI"
-                  placeholder="bolt://localhost:7687"
-                  value={neo4jUri}
-                  onChange={(e) => setNeo4jUri(e.target.value)}
-                  size="xs"
-                  disabled={!useNeo4j}
-                />
-                <TextInput
-                  label="Username"
-                  placeholder="neo4j"
-                  value={neo4jUser}
-                  onChange={(e) => setNeo4jUser(e.target.value)}
-                  size="xs"
-                  disabled={!useNeo4j}
-                />
-                <TextInput
-                  label="Password"
-                  type="password"
-                  value={neo4jPassword}
-                  onChange={(e) => setNeo4jPassword(e.target.value)}
-                  size="xs"
-                  disabled={!useNeo4j}
-                />
-              </Stack>
-            </Accordion.Panel>
-          </Accordion.Item>
-        </Accordion>
+          <Accordion mt="md">
+            <Accordion.Item value="neo4j">
+              <Accordion.Control>
+                <Group>
+                  <Switch
+                    checked={useNeo4j}
+                    onChange={(e) => setUseNeo4j(e.currentTarget.checked)}
+                    label="Neo4j Mutation"
+                    size="sm"
+                  />
+                </Group>
+              </Accordion.Control>
+              <Accordion.Panel>
+                <Stack spacing="xs">
+                  <TextInput
+                    label="Neo4j URI"
+                    placeholder="bolt://localhost:7687"
+                    value={neo4jUri}
+                    onChange={(e) => setNeo4jUri(e.target.value)}
+                    size="xs"
+                    disabled={!useNeo4j}
+                    onMouseDown={stopPropagation}
+                    onPointerDown={stopPropagation}
+                  />
+                  <TextInput
+                    label="Username"
+                    placeholder="neo4j"
+                    value={neo4jUser}
+                    onChange={(e) => setNeo4jUser(e.target.value)}
+                    size="xs"
+                    disabled={!useNeo4j}
+                    onMouseDown={stopPropagation}
+                    onPointerDown={stopPropagation}
+                  />
+                  <TextInput
+                    label="Password"
+                    type="password"
+                    value={neo4jPassword}
+                    onChange={(e) => setNeo4jPassword(e.target.value)}
+                    size="xs"
+                    disabled={!useNeo4j}
+                    onMouseDown={stopPropagation}
+                    onPointerDown={stopPropagation}
+                  />
+                </Stack>
+              </Accordion.Panel>
+            </Accordion.Item>
+          </Accordion>
+        </div>
 
         {bestPrompt && (
           <Stack mt="md" spacing="xs">
             <Text size="sm" weight={700} color="green">
               Best Fitness: {bestFitness.toFixed(4)}
             </Text>
-            <Text size="xs" color="dimmed">
+            <Divider label="Best Prompt Template" labelPosition="center" />
+            <Text size="xs" color="dimmed" style={{ fontFamily: "monospace" }}>
               {bestPrompt.substring(0, 100)}
               {bestPrompt.length > 100 ? "..." : ""}
             </Text>
+            {renderedPrompts.length > 0 && (
+              <>
+                <Divider
+                  label="Rendered Examples"
+                  labelPosition="center"
+                  mt="xs"
+                />
+                {renderedPrompts.map((rendered, idx) => (
+                  <Paper key={idx} p="xs" withBorder>
+                    <Text size="xs" fw={500} c="dimmed" mb={4}>
+                      Example {idx + 1}:
+                    </Text>
+                    <Code block style={{ fontSize: "10px" }}>
+                      {rendered}
+                    </Code>
+                  </Paper>
+                ))}
+              </>
+            )}
           </Stack>
+        )}
+
+        {/* View Results Button */}
+        {jsonResponses && jsonResponses.length > 0 && (
+          <Button
+            fullWidth
+            variant="light"
+            color="blue"
+            size="sm"
+            leftIcon={<IconSearch size={16} />}
+            onClick={openInspector}
+            mt="md"
+          >
+            View Optimization Results ({jsonResponses.length} items)
+          </Button>
         )}
       </Stack>
 
