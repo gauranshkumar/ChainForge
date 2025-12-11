@@ -126,6 +126,9 @@ graph LR
 - Higher selection pressure
 - **Default method**
 
+</div>
+<div v-click>
+
 ```mermaid {scale: 0.6}
 graph TD
     A[Population] --> B[Random k=3]
@@ -133,26 +136,6 @@ graph TD
     C --> D[Winner]
 
     style D fill:#86efac,stroke:#4ade80
-```
-
-</div>
-
-<div v-click>
-
-## Roulette Wheel
-
-- Probability ∝ fitness
-- Maintains diversity
-- Lower selection pressure
-- **Alternative method**
-
-```mermaid {scale: 0.6}
-graph TD
-    A[Population] --> B[Calculate Probabilities]
-    B --> C[Weighted Random]
-    C --> D[Selected]
-
-    style D fill:#fde68a,stroke:#fbbf24
 ```
 
 </div>
