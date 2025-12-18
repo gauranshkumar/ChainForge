@@ -442,11 +442,19 @@ async def evolutionary_algorithm_optimizer(
 
     # Load spaCy model once for all crossover operations
     nlp_model = None
+    # Load spaCy model once for all crossover operations
+    nlp_model = None
     try:
         import spacy
-        nlp_model = spacy.load("en_core_web_sm")
-    except (ImportError, OSError):
-        print("spaCy not available, using simple crossover")
+        try:
+            nlp_model = spacy.load("en_core_web_sm")
+        except OSError:
+            print("Downloading spaCy model 'en_core_web_sm'...")
+            from spacy.cli import download
+            download("en_core_web_sm")
+            nlp_model = spacy.load("en_core_web_sm")
+    except (ImportError, Exception) as e:
+        print(f"spaCy not available or failed to load: {e}. Using simple crossover.")
 
     # Initialize population
     population = [Individual(prompt) for prompt in initial_prompts]
@@ -471,12 +479,20 @@ async def evolutionary_algorithm_optimizer(
         print(f"Generation {generation + 1}/{num_generations}")
 
         # Evaluate population
-        for individual in population:
-            # Get evaluation results from the evaluation function
+        # Evaluate population concurrently
+        async def evaluate_individual(individual):
             if is_async_eval:
-                eval_results = await evaluation_function(individual.prompt)
+                return await evaluation_function(individual.prompt)
             else:
-                eval_results = evaluation_function(individual.prompt)
+                return evaluation_function(individual.prompt)
+
+        # Create tasks for all individuals
+        eval_tasks = [evaluate_individual(ind) for ind in population]
+        all_eval_results = await asyncio.gather(*eval_tasks)
+
+        # Assign results and calculate fitness
+        for i, individual in enumerate(population):
+            eval_results = all_eval_results[i]
             individual.evaluation_results = eval_results
 
             # Parse predictions and calculate fitness

@@ -289,6 +289,10 @@ def run_over_responses(process_func, responses: list, scope: str, process_type: 
                     }
     return responses
 
+# Custom executor for high-concurrency LLM calls
+from concurrent.futures import ThreadPoolExecutor
+executor = ThreadPoolExecutor(max_workers=100)
+
 async def make_sync_call_async(sync_method, *args, **params):
     """
         Makes a blocking synchronous call asynchronous, so that it can be awaited.
@@ -300,7 +304,7 @@ async def make_sync_call_async(sync_method, *args, **params):
         def partial_sync_meth(*a):
             return sync_method(*a, **params)
         method = partial_sync_meth
-    return await loop.run_in_executor(None, method, *args)
+    return await loop.run_in_executor(executor, method, *args)
 
 def exclude_key(d, key_to_exclude):
         return {k: v for k, v in d.items() if k != key_to_exclude}
@@ -2154,7 +2158,8 @@ async def optimize():
         # Extract valid labels from test dataset
         valid_labels = list(set(test_case.get("label") for test_case in test_dataset if "label" in test_case))
 
-        for test_case in test_dataset:
+        # Helper for a single test case evaluation
+        async def evaluate_single_case(test_case):
             # 1. Render template with test input
             rendered_prompt = render_template(prompt_template, test_case)
 
@@ -2174,8 +2179,8 @@ async def optimize():
             # 3. Parse response to extract prediction
             predicted_label = extract_label(llm_response, valid_labels)
 
-            # 4. Store result in format expected by parse_predictions
-            results.append({
+            # 4. Return result
+            return {
                 "text": llm_response,
                 "prompt": rendered_prompt,
                 "eval_res": {
@@ -2184,7 +2189,11 @@ async def optimize():
                         "pred": predicted_label
                     }]
                 }
-            })
+            }
+
+        # create tasks for all test cases
+        tasks = [evaluate_single_case(test_case) for test_case in test_dataset]
+        results = await asyncio.gather(*tasks)
 
         return results
 
