@@ -569,10 +569,15 @@ async def evolutionary_algorithm_optimizer(
 
             population = new_population
 
+    # Calculate final average fitness
+    final_fitness_scores = [ind.fitness if ind.fitness is not None else float('-inf') for ind in population]
+    avg_fitness = float(np.mean(final_fitness_scores)) if final_fitness_scores else 0.0
+
     # Return results
     return {
         "best_prompt": best_individual.prompt,
         "best_fitness": float(best_fitness),
+        "avg_fitness": avg_fitness,
         "history": history,
         "final_population": [ind.to_dict() for ind in population]
     }

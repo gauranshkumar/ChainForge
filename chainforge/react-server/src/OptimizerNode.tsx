@@ -61,7 +61,15 @@ interface OptimizerNodeData {
   neo4j_uri?: string;
   neo4j_user?: string;
   neo4j_password?: string;
+
   refresh?: boolean;
+
+  // Persisted Optimization Results
+  best_prompt?: string;
+  best_fitness?: number;
+  avg_fitness?: number;
+  rendered_prompts?: string[];
+  json_responses?: LLMResponse[];
 }
 
 interface OptimizerNodeProps {
@@ -79,11 +87,17 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
   const showAlert = useContext(AlertModalContext);
 
   const [status, setStatus] = useState<Status>(Status.NONE);
-  const [jsonResponses, setJSONResponses] = useState<LLMResponse[]>([]);
-  const [bestPrompt, setBestPrompt] = useState<string>("");
-  const [bestFitness, setBestFitness] = useState<number>(0);
-  const [avgFitness, setAvgFitness] = useState<number>(0);
-  const [renderedPrompts, setRenderedPrompts] = useState<string[]>([]);
+  const [jsonResponses, setJSONResponses] = useState<LLMResponse[]>(
+    data.json_responses || [],
+  );
+  const [bestPrompt, setBestPrompt] = useState<string>(data.best_prompt || "");
+  const [bestFitness, setBestFitness] = useState<number>(
+    data.best_fitness || 0,
+  );
+  const [avgFitness, setAvgFitness] = useState<number>(data.avg_fitness || 0);
+  const [renderedPrompts, setRenderedPrompts] = useState<string[]>(
+    data.rendered_prompts || [],
+  );
 
   // Optimizer settings
   const [populationSize, setPopulationSize] = useState(
@@ -414,6 +428,15 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
       console.log(
         `OptimizerNode: Created ${responses.length} responses for inspection`,
       );
+
+      // Save results to node data for persistence
+      setDataPropsForNode(id, {
+        best_prompt: result.best_prompt,
+        best_fitness: result.best_fitness,
+        avg_fitness: result.avg_fitness,
+        rendered_prompts: rendered,
+        json_responses: responses,
+      });
 
       // Output the best prompt for downstream nodes
       const outputData: TemplateVarInfo = {
