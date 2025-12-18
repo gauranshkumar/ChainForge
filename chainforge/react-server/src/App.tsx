@@ -70,7 +70,7 @@ import SimpleEvalNode from "./SimpleEvalNode";
 import UploadNode from "./UploadNode";
 import ChunkNode from "./ChunkNode";
 import RetrievalNode from "./RetrievalNode";
-import OptimizerNode from "./OptimizerNode";
+
 import {
   getDefaultModelFormData,
   getDefaultModelSettings,
@@ -231,7 +231,6 @@ const nodeTypes = {
   retrieval: RetrievalNode,
   rerank: RerankNode,
   media: MediaNode,
-  optimizer: OptimizerNode,
 };
 
 const nodeEmojis = {
@@ -255,7 +254,6 @@ const nodeEmojis = {
   retrieval: "🎯",
   rerank: <IconSortAscending size={16} />,
   media: "📺",
-  optimizer: "🧬",
 };
 
 const edgeTypes = {
@@ -421,14 +419,7 @@ const App = () => {
         tooltip: "Reranks retrieval outputs.",
         onClick: () => addNode("rerank"),
       },
-      {
-        key: "optimizer",
-        title: "Optimizer Node",
-        icon: nodeEmojis.optimizer,
-        tooltip:
-          "Optimize prompts using evolutionary algorithms. Uses genetic operations (selection, crossover, mutation) to evolve better prompts for text classification tasks.",
-        onClick: () => addNode("optimizer"),
-      },
+
       {
         key: "divider",
       },

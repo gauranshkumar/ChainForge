@@ -27,6 +27,12 @@ import {
   TextInputStylesNames,
   useMantineColorScheme,
   NumberInput,
+  Stack,
+  Group,
+  Badge,
+  Select,
+  Checkbox,
+  PasswordInput,
 } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import {
@@ -38,6 +44,10 @@ import {
   IconMessageCircle,
   IconPlus,
   IconTrash,
+  IconRocket,
+  IconSettings,
+  IconX,
+  IconCheck,
 } from "@tabler/icons-react";
 import useStore from "./store";
 import BaseNode from "./BaseNode";
@@ -60,6 +70,7 @@ import {
   truncStr,
   genDebounceFunc,
   ensureUniqueName,
+  FLASK_BASE_URL,
 } from "./backend/utils";
 import LLMResponseInspectorDrawer from "./LLMResponseInspectorDrawer";
 import CancelTracker from "./backend/canceler";
@@ -333,6 +344,21 @@ export interface PromptNodeProps {
     refreshLLMList: boolean;
     idxPromptVariantShown?: number;
     promptVariantLabel?: string[];
+
+    // Optimization fields
+    population_size?: number;
+    num_generations?: number;
+    mutation_rate?: number;
+    crossover_rate?: number;
+    selection_method?: string;
+    tournament_size?: number;
+    fitness_metric?: string;
+    elitism_count?: number;
+    neo4j_uri?: string;
+    neo4j_user?: string;
+    neo4j_password?: string;
+    ground_truth_var?: string;
+    custom_evaluator_id?: string;
   };
   id: string;
   type: string;
@@ -366,6 +392,7 @@ const PromptNode: React.FC<PromptNodeProps> = ({
   const setDataPropsForNode = useStore((state) => state.setDataPropsForNode);
   const pingOutputNodes = useStore((state) => state.pingOutputNodes);
   const bringNodeToFront = useStore((state) => state.bringNodeToFront);
+  const nodes = useStore((state) => state.nodes);
 
   // API Keys (set by user in popup GlobalSettingsModal)
   const apiKeys = useStore((state) => state.apiKeys);
@@ -429,7 +456,260 @@ const PromptNode: React.FC<PromptNodeProps> = ({
 
   // Cancelation of pending queries
   const [cancelId, setCancelId] = useState(Date.now());
-  const refreshCancelId = () => setCancelId(Date.now());
+  const [deletedIndices, setDeletedIndices] = useState<number[]>([]);
+
+  // Optimization settings
+  const [populationSize, setPopulationSize] = useState(
+    data.population_size || 10,
+  );
+  const [numEvoGenerations, setNumEvoGenerations] = useState(
+    data.num_generations || 5,
+  );
+  const [mutationRate, setMutationRate] = useState(data.mutation_rate || 0.3);
+  const [crossoverRate, setCrossoverRate] = useState(
+    data.crossover_rate || 0.7,
+  );
+  const [selectionMethod, setSelectionMethod] = useState(
+    data.selection_method || "tournament",
+  );
+  const [tournamentSize, setTournamentSize] = useState(
+    data.tournament_size || 3,
+  );
+  const [fitnessMetric, setFitnessMetric] = useState(
+    data.fitness_metric || "mcc",
+  );
+  const [elitismCount, setElitismCount] = useState(data.elitism_count || 2);
+  const [neo4jUri, setNeo4jUri] = useState(
+    data.neo4j_uri || "bolt://localhost:7688",
+  );
+  const [neo4jUser, setNeo4jUser] = useState(data.neo4j_user || "");
+  const [neo4jPassword, setNeo4jPassword] = useState(data.neo4j_password || "");
+  const [useNeo4j, setUseNeo4j] = useState(false);
+  const [groundTruthVar, setGroundTruthVar] = useState(
+    data.ground_truth_var || "",
+  );
+  const [customEvaluatorId, setCustomEvaluatorId] = useState(
+    data.custom_evaluator_id || "",
+  );
+
+  const evaluatorOptions = useMemo(() => {
+    return nodes
+      .filter((n) => n.type === "evaluator" && n.data.language === "python")
+      .map((n) => ({
+        value: n.id,
+        label: n.data.title || `Evaluator (${n.id.slice(0, 4)})`,
+      }));
+  }, [nodes]);
+
+  // Optimization Modal & Results
+  const [showOptimizationModal, setShowOptimizationModal] = useState(false);
+  const [showOptimizationResultsModal, setShowOptimizationResultsModal] =
+    useState(false);
+  const [optimizationResults, setOptimizationResults] = useState<{
+    best_prompt: string;
+    best_fitness: number;
+    avg_fitness: number;
+  } | null>(null);
+  const [isOptimizing, setIsOptimizing] = useState(false);
+  const [optimizationProgress, setOptimizationProgress] = useState<{
+    generation: number;
+    total: number;
+  } | null>(null);
+
+  const startOptimization = async () => {
+    if (llmItemsCurrState.length === 0) {
+      showAlert?.("Please add at least one LLM model.");
+      return;
+    }
+
+    let currentPrompt = "";
+    if (typeof promptText === "string") currentPrompt = promptText;
+    else if (Array.isArray(promptText) && promptText.length > 0)
+      currentPrompt = promptText[idxPromptVariantShown ?? 0];
+
+    if (!currentPrompt || currentPrompt.trim().length === 0) {
+      showAlert?.("Please enter a prompt text to optimize.");
+      return;
+    }
+
+    const allVars =
+      groundTruthVar.trim() !== ""
+        ? [...templateVars, groundTruthVar]
+        : templateVars;
+    const pulledData = pullInputData(allVars, id);
+    const test_dataset: any[] = [];
+
+    const keys = Object.keys(pulledData);
+
+    // Separate ground truth data if present
+    let groundTruthData: any[] = [];
+    const trimmedGtVar = groundTruthVar.trim();
+
+    if (trimmedGtVar !== "") {
+      if (pulledData[trimmedGtVar]) {
+        groundTruthData = pulledData[trimmedGtVar];
+        delete pulledData[trimmedGtVar];
+      } else if (keys.length > 0) {
+        // Fallback: Check if ground truth is in metavars of the first variable
+        // This handles cases where the ground truth column is passed alongside a variable (e.g. from Tabular Data)
+        const firstVarData = pulledData[keys[0]] || [];
+        const potentialGroundTruth = firstVarData.map((item: any) => {
+          if (
+            typeof item === "object" &&
+            item.metavars &&
+            trimmedGtVar in item.metavars
+          ) {
+            return item.metavars[trimmedGtVar];
+          }
+          return undefined;
+        });
+
+        if (potentialGroundTruth.some((v: any) => v !== undefined)) {
+          groundTruthData = potentialGroundTruth;
+        }
+      }
+      console.log("Ground Truth Extraction:", {
+        var: trimmedGtVar,
+        found: groundTruthData.length > 0,
+        sample: groundTruthData.slice(0, 3),
+      });
+    }
+    if (keys.length > 0) {
+      const combinations = (objects: any[]) => {
+        return objects.reduce(
+          (a, b) => a.flatMap((x: any) => b.map((y: any) => ({ ...x, ...y }))),
+          [{}],
+        );
+      };
+
+      const varObjects = keys.map((k) => {
+        return (pulledData[k] || []).map((val: any) => ({ [k]: val }));
+      });
+
+      if (varObjects.length > 0) {
+        let comb = combinations(varObjects);
+
+        // Attach ground truth if available
+        if (groundTruthData.length > 0) {
+          // Simplified matching: Zip based on index
+          // Assuming the order of generation roughly matches the input order if inputs are from same source
+          // Or if simple 1-var input.
+          // A better approach would be to match by associate_id if possible.
+          comb = comb.map((item: any, idx: number) => {
+            const gt = groundTruthData[idx % groundTruthData.length]; // cyclical fallback
+            // Check for associate_id match if possible
+            // For now, we just take the text value
+            const label = typeof gt === "string" ? gt : gt.text;
+            return { ...item, label: label };
+          });
+        }
+        // Filter the dataset to ONLY include relevant keys (template vars + label)
+        // This prevents sending massive unused columns to the backend (fixing 413 errors)
+        const relevantKeys = new Set([...allVars, "label"]);
+
+        test_dataset.push(
+          ...comb.map((item: any) => {
+            const newItem: any = {};
+            // Always keep template vars
+            allVars.forEach((k) => {
+              if (k in item) newItem[k] = item[k];
+            });
+            // Keep label if present (ground truth)
+            if ("label" in item) newItem.label = item.label;
+            return newItem;
+          }),
+        );
+      }
+    }
+
+    setIsOptimizing(true);
+    setOptimizationResults(null);
+    setOptimizationProgress(null);
+
+    try {
+      const formData = new FormData();
+      formData.append("id", id);
+      formData.append("method", "evolutionary_algorithm");
+      formData.append("initial_prompts", JSON.stringify([currentPrompt]));
+      formData.append("test_dataset", JSON.stringify(test_dataset));
+
+      // Extract LLM details
+      // LLMSpec: { base_model: "openai", model: "gpt-4", ... }
+      if (llmItemsCurrState.length > 0) {
+        const llm = llmItemsCurrState[0];
+        formData.append("llm_provider", llm.base_model);
+        formData.append("llm_model", llm.model);
+        formData.append("llm_params", JSON.stringify(llm.settings || {}));
+      }
+      // Keep sending 'llm' object for completeness/compatibility
+      formData.append("llm", JSON.stringify(llmItemsCurrState[0]));
+
+      if (customEvaluatorId) {
+        const evalNode = nodes.find((n) => n.id === customEvaluatorId);
+        if (evalNode && evalNode.data.code) {
+          formData.append("custom_evaluator_code", evalNode.data.code);
+        }
+      }
+
+      const params = {
+        population_size: populationSize,
+        num_generations: numEvoGenerations,
+        mutation_rate: mutationRate,
+        crossover_rate: crossoverRate,
+        selection_method: selectionMethod,
+        tournament_size: tournamentSize,
+        fitness_metric: fitnessMetric,
+        elitism_count: elitismCount,
+        neo4j_uri: neo4jUri,
+        neo4j_user: neo4jUser,
+        neo4j_password: neo4jPassword,
+        use_neo4j: useNeo4j,
+      };
+      formData.append("settings", JSON.stringify(params));
+
+      const response = await fetch(`${FLASK_BASE_URL}optimize`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        throw new Error(`Optimization failed: ${response.statusText}`);
+      }
+
+      const res = await response.json();
+
+      setOptimizationResults({
+        best_prompt: res.best_prompt,
+        best_fitness: res.best_fitness,
+        avg_fitness: res.avg_fitness,
+      });
+      setShowOptimizationResultsModal(true);
+      setShowOptimizationModal(false);
+
+      setDataPropsForNode(id, {
+        population_size: populationSize,
+        num_generations: numEvoGenerations,
+        mutation_rate: mutationRate,
+        crossover_rate: crossoverRate,
+        selection_method: selectionMethod,
+        tournament_size: tournamentSize,
+        fitness_metric: fitnessMetric,
+        elitism_count: elitismCount,
+        neo4j_uri: neo4jUri,
+        neo4j_user: neo4jUser,
+        neo4j_password: neo4jPassword,
+      });
+    } catch (err: any) {
+      console.error(err);
+      showAlert?.(err.message || "Optimization failed.");
+    } finally {
+      setIsOptimizing(false);
+    }
+  };
+
+  const refreshCancelId = () => {
+    setCancelId(Date.now());
+  };
 
   // Debounce helpers
   const debounceTimeoutRef = useRef(null);
@@ -1726,6 +2006,18 @@ Soft failing by replacing undefined with empty strings.`,
               ml="4px"
               w="25%"
             />
+            <Tooltip label="Configure & Run Optimization" withinPortal>
+              <Button
+                size="xs"
+                variant="light"
+                color="grape"
+                ml="xs"
+                p="0px 6px"
+                onClick={() => setShowOptimizationModal(true)}
+              >
+                <IconRocket size="14px" style={{ marginRight: "4px" }} /> Opt
+              </Button>
+            </Tooltip>
           </Flex>
         </div>
 
@@ -1806,6 +2098,236 @@ Soft failing by replacing undefined with empty strings.`,
         jsonResponses={jsonResponses ?? []}
         showDrawer={showDrawer}
       />
+
+      {/* Optimization Settings Modal */}
+      <Modal
+        opened={showOptimizationModal}
+        onClose={() => setShowOptimizationModal(false)}
+        title="Optimization Settings"
+        size="lg"
+      >
+        <Stack>
+          <Text size="sm" color="dimmed">
+            Use an evolutionary algorithm to optimize your prompt.
+          </Text>
+          <Group grow>
+            <NumberInput
+              label="Generations"
+              value={numEvoGenerations}
+              onChange={(v) => setNumEvoGenerations(Number(v))}
+              min={1}
+              max={50}
+            />
+            <NumberInput
+              label="Population Size"
+              value={populationSize}
+              onChange={(v) => setPopulationSize(Number(v))}
+              min={2}
+              max={50}
+            />
+          </Group>
+          <Group grow>
+            <NumberInput
+              label="Mutation Rate"
+              value={mutationRate}
+              onChange={(v) => setMutationRate(Number(v))}
+              precision={2}
+              step={0.05}
+              min={0}
+              max={1}
+            />
+            <NumberInput
+              label="Crossover Rate"
+              value={crossoverRate}
+              onChange={(v) => setCrossoverRate(Number(v))}
+              precision={2}
+              step={0.05}
+              min={0}
+              max={1}
+            />
+          </Group>
+          <Divider label="Advanced" labelPosition="center" />
+          <Group grow>
+            <NumberInput
+              label="Elitism Count"
+              value={elitismCount}
+              onChange={(v) => setElitismCount(Number(v))}
+              min={0}
+            />
+            <NumberInput
+              label="Tournament Size"
+              value={tournamentSize}
+              onChange={(v) => setTournamentSize(Number(v))}
+              min={1}
+            />
+          </Group>
+          <Checkbox
+            label="Use Neo4j for Mutation"
+            checked={useNeo4j}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+              setUseNeo4j(e.currentTarget.checked)
+            }
+            mt="xs"
+          />
+          {useNeo4j && (
+            <>
+              <TextInput
+                label="Neo4j URI"
+                placeholder="bolt://localhost:7687"
+                value={neo4jUri}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  setNeo4jUri(e.currentTarget.value)
+                }
+              />
+              <Group grow>
+                <TextInput
+                  label="Neo4j User"
+                  value={neo4jUser}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                    setNeo4jUser(e.currentTarget.value)
+                  }
+                />
+                <PasswordInput
+                  label="Neo4j Password"
+                  value={neo4jPassword}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                    setNeo4jPassword(e.currentTarget.value)
+                  }
+                />
+              </Group>
+            </>
+          )}
+          <TextInput
+            label="Ground Truth Variable (Optional)"
+            placeholder="e.g. expected_output"
+            description="Name of the input variable containing expected labels. Must be connected to this node."
+            value={groundTruthVar}
+            onChange={(e) => setGroundTruthVar(e.currentTarget.value)}
+          />
+          <Select
+            label="Optimization Metric"
+            description="Metric to optimize for (requires Ground Truth)."
+            data={[
+              { value: "balanced_accuracy", label: "Balanced Accuracy" },
+              { value: "mcc", label: "Matthews Correlation Coefficient (MCC)" },
+            ]}
+            value={fitnessMetric}
+            onChange={(v) => {
+              setFitnessMetric(v || "balanced_accuracy");
+              // Clear custom evaluator if a standard metric is chosen
+              if (v) {
+                setCustomEvaluatorId("");
+                setDataPropsForNode(id, { custom_evaluator_id: "" });
+              }
+            }}
+          />
+          <Divider label="OR" labelPosition="center" my="xs" />
+          <Select
+            label="Fitness Evaluator (Optional)"
+            placeholder="Select a Python Evaluator Node"
+            description="Use a connected Python Code Evaluator node as the fitness function."
+            data={evaluatorOptions}
+            value={customEvaluatorId}
+            onChange={(v) => {
+              setCustomEvaluatorId(v || "");
+              setDataPropsForNode(id, { custom_evaluator_id: v || "" });
+              // If custom evaluator is selected, we implicitly "ignore" the standard metric dropdown visually,
+              // but we don't strictly need to clear it since custom_evaluator_code takes precedence in backend.
+            }}
+            clearable
+          />
+
+          <Button
+            fullWidth
+            onClick={startOptimization}
+            loading={isOptimizing}
+            leftIcon={<IconRocket size={18} />}
+          >
+            Start Optimization
+          </Button>
+        </Stack>
+      </Modal>
+
+      {/* Optimization Results Modal */}
+      <Modal
+        opened={showOptimizationResultsModal}
+        onClose={() => setShowOptimizationResultsModal(false)}
+        title="Optimization Results"
+        size="lg"
+      >
+        {optimizationResults && (
+          <Stack>
+            <Group position="apart">
+              <Badge size="lg" color="green">
+                Best Fitness: {optimizationResults.best_fitness.toFixed(4)}
+              </Badge>
+              <Badge size="lg" color="blue">
+                Avg Fitness: {optimizationResults.avg_fitness.toFixed(4)}
+              </Badge>
+            </Group>
+            <Text size="sm" weight={500}>
+              Best Prompt:
+            </Text>
+            <Box
+              p="xs"
+              sx={{
+                backgroundColor: "#f1f3f5",
+                borderRadius: "8px",
+                maxHeight: "300px",
+                overflowY: "auto",
+                whiteSpace: "pre-wrap",
+              }}
+            >
+              {optimizationResults.best_prompt}
+            </Box>
+            <Group position="right">
+              <Button
+                variant="light"
+                onClick={() => setShowOptimizationResultsModal(false)}
+              >
+                Close
+              </Button>
+              <Button
+                onClick={() => {
+                  // Manually add the variant using current state
+                  const currentPrompts = Array.isArray(promptText)
+                    ? promptText
+                    : [promptText];
+                  const newPrompts = [
+                    ...currentPrompts,
+                    optimizationResults.best_prompt,
+                  ];
+
+                  // Update state
+                  setPromptText(newPrompts);
+
+                  const newLabels = [
+                    ...promptVariantLabel,
+                    `Optimized ${promptVariantLabel.length + 1}`,
+                  ];
+                  setPromptVariantLabel(newLabels);
+
+                  const newIdx = newPrompts.length - 1;
+                  setIdxPromptVariantShown(newIdx);
+
+                  // Update persistence
+                  setDataPropsForNode(id, {
+                    prompt: newPrompts,
+                    promptVariantLabel: newLabels,
+                    idxPromptVariantShown: newIdx,
+                  });
+
+                  setShowOptimizationResultsModal(false);
+                  showAlert?.("Added optimized prompt as a new variant!");
+                }}
+                leftIcon={<IconPlus size={16} />}
+              >
+                Add as Variant
+              </Button>
+            </Group>
+          </Stack>
+        )}
+      </Modal>
     </BaseNode>
   );
 };

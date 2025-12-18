@@ -74,6 +74,7 @@ PORT = 8000
 BUILD_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'react-server', 'build')
 STATIC_DIR = os.path.join(BUILD_DIR, 'static')
 app = Flask(__name__, static_folder=STATIC_DIR, template_folder=BUILD_DIR)
+app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024  # 1 GB Limit
 
 # Set up CORS for specific routes
 cors = CORS(app, resources={r"/*": {"origins": "*"}})
@@ -1797,7 +1798,7 @@ def retrieve():
                 gid = method_id_to_group.get(mid)
                 if gid: groups[gid][mid] = items
             for gid, method_lists in groups.items():
-                cfg = group_cfg.get(gid, {})
+                cfg = group_cfg.get("gid", {})
                 fmethod = cfg.get("fusionMethod")
                 settings = cfg.get("fusionSettings") or {}
                 if fmethod in ("reciprocal_rank_fusion"): 
@@ -2014,12 +2015,16 @@ async def optimize():
 
     # Validate required fields
     if not method:
+        print("DEBUG: Missing 'method' in form data")
         return jsonify({"error": "Missing 'method' in form data"}), 400
     if not initial_prompts_json:
+        print("DEBUG: Missing 'initial_prompts' in form data")
         return jsonify({"error": "Missing 'initial_prompts' in form data"}), 400
     if not test_dataset_json:
+        print("DEBUG: Missing 'test_dataset' in form data")
         return jsonify({"error": "Missing 'test_dataset' in form data"}), 400
     if not llm_provider:
+        print("DEBUG: Missing 'llm_provider' in form data")
         return jsonify({"error": "Missing 'llm_provider' in form data"}), 400
 
     # Parse initial prompts (templates)
@@ -2049,7 +2054,12 @@ async def optimize():
             else:
                 # Already in correct format: {input: "...", label: "..."}
                 test_dataset.append(item)
+        
+        if len(test_dataset) > 0:
+            print(f"DEBUG: First item in test_dataset: {test_dataset[0].keys()}")
+
     except (json.JSONDecodeError, ValueError) as e:
+        print(f"Error parsing test_dataset: {e}")
         return jsonify({"error": f"Invalid JSON in test_dataset: {e}"}), 400
 
     # Parse LLM parameters
@@ -2080,6 +2090,11 @@ async def optimize():
 
     # Extract settings from form data
     settings = {}
+    custom_evaluator_code = request.form.get("custom_evaluator_code")
+    if custom_evaluator_code and custom_evaluator_code.strip():
+        settings['fitness_metric'] = 'custom'
+        print(f"Using Custom Evaluator logic with metric 'custom'.")
+
     known_int_params = {"population_size", "num_generations", "tournament_size", "elitism_count"}
     known_float_params = {"mutation_rate", "crossover_rate"}
     known_str_params = {"selection_method", "fitness_metric", "neo4j_uri", "neo4j_user", "neo4j_password"}
@@ -2144,20 +2159,12 @@ async def optimize():
     async def evaluation_function(prompt_template):
         """
         Evaluate a prompt template against test dataset.
-
-        For each test case:
-        1. Render template with test input
-        2. Call LLM with rendered prompt
-        3. Parse LLM response
-        4. Compare with ground truth
-
-        Returns evaluation results in format expected by parse_predictions.
         """
         results = []
 
         # Extract valid labels from test dataset
         valid_labels = list(set(test_case.get("label") for test_case in test_dataset if "label" in test_case))
-
+        
         # Helper for a single test case evaluation
         async def evaluate_single_case(test_case):
             # 1. Render template with test input
@@ -2165,37 +2172,133 @@ async def optimize():
 
             # 2. Call LLM
             try:
-                llm_response = await make_sync_call_async(
-                    provider_func,
-                    prompt=rendered_prompt,
-                    model=llm_model,
-                    chat_history=None,
-                    **llm_params
-                )
+                # Determine if we need to await the provider function
+                # (Wrapper for sync/async compatibility)
+                import inspect
+                is_coroutine = inspect.iscoroutinefunction(provider_func)
+                
+                # Ensure default temperature if not present
+                if "temperature" not in llm_params:
+                    llm_params["temperature"] = 0.7
+
+                if is_coroutine:
+                     llm_response = await provider_func(
+                        prompt=rendered_prompt,
+                        model=llm_model,
+                        **llm_params
+                    )
+                else:
+                    # Run sync function in thread pool if needed, or just call it
+                    # But since we are inside an async function, we should ideally not block
+                    # For now, let's assume make_sync_call_async wrapper usage or direct call
+                    llm_response = await make_sync_call_async(
+                        provider_func,
+                        prompt=rendered_prompt,
+                        model=llm_model,
+                        **llm_params
+                    )
+
+                # Extract text
+                response_text = ""
+                if isinstance(llm_response, dict):
+                     # Handle common formats
+                    if "choices" in llm_response and len(llm_response["choices"]) > 0:
+                        choice = llm_response["choices"][0]
+                        if "text" in choice:
+                            response_text = choice["text"]
+                        elif "message" in choice and "content" in choice["message"]:
+                            response_text = choice["message"]["content"]
+                    elif "text" in llm_response:
+                        response_text = llm_response["text"]
+                    elif "content" in llm_response:
+                        response_text = llm_response["content"]
+                else:
+                    response_text = str(llm_response)
+
+                # 3. Score response
+                if custom_evaluator_code and custom_evaluator_code.strip():
+                    try:
+                        # Prepare execution environment for Custom Evaluator
+                        scope = {}
+                        # Define ResponseInfo class matching frontend structure
+                        from collections import namedtuple
+                        ResponseInfo = namedtuple('ResponseInfo', ['text', 'prompt', 'var', 'meta', 'llm'])
+                        scope['ResponseInfo'] = ResponseInfo
+                        
+                        # Exec user code to define 'evaluate'
+                        exec(custom_evaluator_code, scope)
+                        
+                        if 'evaluate' not in scope:
+                             # Try 'process' if evaluate is missing? No, user selected evaluator.
+                            raise ValueError("Custom code must define an 'evaluate' function.")
+                        
+                        evaluate_func = scope['evaluate']
+                        
+                        # create ResponseInfo object
+                        r_info = ResponseInfo(
+                            text=response_text,
+                            prompt=rendered_prompt,
+                            var=test_case,
+                            meta={}, 
+                            llm=llm_model
+                        )
+                        
+                        # Call evaluate
+                        eval_result = evaluate_func(r_info)
+                        
+                        # Try to parse result as float
+                        if isinstance(eval_result, bool):
+                            score = 1.0 if eval_result else 0.0
+                        else:
+                            try:
+                                score = float(eval_result)
+                            except:
+                                score = 0.0
+                                
+                        return {
+                            "prompt": rendered_prompt,
+                            "response": response_text,
+                            "eval_res": {
+                                "predicted_label": score,
+                                "true_label": 1.0 
+                            }
+                        }
+
+                    except Exception as e:
+                        print(f"Error executing custom evaluator: {e}")
+                        return {
+                            "prompt": rendered_prompt,
+                            "response": response_text,
+                            "eval_res": { "predicted_label": 0.0 }
+                        }
+
+                elif test_case.get("label"):
+                    # Standard Ground Truth Evaluation
+                    extracted = extract_label(response_text, valid_labels)
+                    return {
+                        "prompt": rendered_prompt,
+                        "response": response_text,
+                        "eval_res": {
+                            "true_label": test_case["label"],
+                            "predicted_label": extracted
+                        }
+                    }
+                else:
+                    return {
+                        "prompt": rendered_prompt,
+                        "response": response_text,
+                        "eval_res": {}
+                    }
             except Exception as e:
-                print(f"Error calling LLM for prompt: {e}", file=sys.stderr)
-                llm_response = ""
+                print(f"Error processing test case: {e}")
+                return None
 
-            # 3. Parse response to extract prediction
-            predicted_label = extract_label(llm_response, valid_labels)
-
-            # 4. Return result
-            return {
-                "text": llm_response,
-                "prompt": rendered_prompt,
-                "eval_res": {
-                    "items": [{
-                        "true": test_case.get("label", ""),
-                        "pred": predicted_label
-                    }]
-                }
-            }
-
-        # create tasks for all test cases
-        tasks = [evaluate_single_case(test_case) for test_case in test_dataset]
+        # Run all test cases
+        tasks = [evaluate_single_case(case) for case in test_dataset]
         results = await asyncio.gather(*tasks)
+        return [r for r in results if r is not None]
 
-        return results
+
 
     try:
         # Call the optimizer handler (may be async)
@@ -2309,6 +2412,7 @@ def run_server(host="", port=8000, flows_dir=None, secure: Literal["off", "setti
             exit(1)
         FLOWS_DIR_PWD = password
 
+    print(f"Flask APP Config MAX_CONTENT_LENGTH: {app.config.get('MAX_CONTENT_LENGTH')}")
     app.run(host=host, port=port, debug=True)
 
 if __name__ == '__main__':

@@ -67,7 +67,10 @@ export const FLASK_BASE_URL =
   // @ts-expect-error undefined
   window.__CF_HOSTNAME !== undefined && window.__CF_PORT !== undefined
     ? "/"
-    : "http://localhost:8000/";
+    : `${window.location.protocol}//${window.location.hostname}:${
+        // @ts-expect-error undefined
+        window.__CF_PORT || "8000"
+      }/`;
 
 export async function call_flask_backend(
   route: string,

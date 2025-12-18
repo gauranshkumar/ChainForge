@@ -43,6 +43,17 @@ def calculate_fitness(
         return calculate_mcc(y_true, y_pred)
     elif metric == "balanced_accuracy":
         return calculate_balanced_accuracy(y_true, y_pred)
+    elif metric == "custom":
+        # For custom metric, y_pred contains the scores directly
+        # We process them to ensure they are float numbers
+        try:
+            scores = [float(s) for s in y_pred if s is not None]
+            if not scores:
+                return 0.0
+            return float(np.mean(scores))
+        except (ValueError, TypeError):
+            print(f"Error calculating custom fitness: predicted values are not numbers. First few: {y_pred[:5]}")
+            return 0.0
     else:
         raise ValueError(f"Unknown metric: {metric}")
 
