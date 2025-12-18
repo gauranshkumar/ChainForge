@@ -534,8 +534,10 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
       style={{
         resize: "both",
         overflow: "auto",
-        minWidth: "350px",
-        minHeight: "400px",
+        minWidth: "300px",
+        minHeight: "300px",
+        maxWidth: "800px",
+        maxHeight: "800px",
       }}
     >
       {/* Input handles for test data only (no prompts handle) */}
@@ -897,7 +899,15 @@ const OptimizerNode: React.FC<OptimizerNodeProps> = ({ data, id }) => {
               <Text size="xs" fw={500} c="dimmed">
                 Test Case {idx + 1}:
               </Text>
-              <Code block mt="xs">
+              <Code
+                block
+                mt="xs"
+                style={{
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-word",
+                  fontSize: "10pt",
+                }}
+              >
                 {prompt}
               </Code>
             </Paper>
