@@ -20,4 +20,15 @@ Existing installation methods for ChainForge should also work, provided that the
 There is another experimental branch in this repository: [evo-optimiser-prompt-integrated](https://github.com/gauranshkumar/ChainForge/tree/evo-optimiser-prompt-integrated).
 This branch implements a more integrated version of the prompt optimiser. It is not yet ready for production use but is available for reference and can be built using the same bash script. Please note that the submitted `.cforge` files are **not compatible** with the experimental branch.
 
+---
+
+### Screenshots
+
+#### Optimizer Node UI
+![Optimizer Node UI](sketch1.png)
+
+#### Experiment Outputs
+![Experiment Output 1](sketch2.png)
+![Experiment Output 2](sketch3.png)
+
 
