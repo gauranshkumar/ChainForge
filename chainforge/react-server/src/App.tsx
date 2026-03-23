@@ -43,6 +43,7 @@ import {
   IconHeart,
   IconCheckbox,
   IconTransform,
+  IconSortAscending,
 } from "@tabler/icons-react";
 import RemoveEdge from "./RemoveEdge";
 import TextFieldsNode from "./TextFieldsNode"; // Import a custom node
@@ -50,6 +51,7 @@ import PromptNode from "./PromptNode";
 import CodeEvaluatorNode from "./CodeEvaluatorNode";
 import VisNode from "./VisNode";
 import InspectNode from "./InspectorNode";
+import SelectVarsNode from "./SelectVarsNode";
 import ScriptNode from "./ScriptNode";
 import { AlertModalContext } from "./AlertModal";
 import ItemsNode from "./ItemsNode";
@@ -57,12 +59,17 @@ import TabularDataNode from "./TabularDataNode";
 import JoinNode from "./JoinNode";
 import SplitNode from "./SplitNode";
 import CommentNode from "./CommentNode";
+import MultiEvalNode from "./MultiEvalNode";
+import RerankNode from "./RerankNode";
 import GlobalSettingsModal, {
   GlobalSettingsModalRef,
 } from "./GlobalSettingsModal";
 import ExampleFlowsModal, { ExampleFlowsModalRef } from "./ExampleFlowsModal";
 import LLMEvaluatorNode from "./LLMEvalNode";
 import SimpleEvalNode from "./SimpleEvalNode";
+import UploadNode from "./UploadNode";
+import ChunkNode from "./ChunkNode";
+import RetrievalNode from "./RetrievalNode";
 import {
   getDefaultModelFormData,
   getDefaultModelSettings,
@@ -89,6 +96,7 @@ import {
   APP_IS_RUNNING_LOCALLY,
   browserTabIsActive,
   FLASK_BASE_URL,
+  RAG_AVAILABLE,
 } from "./backend/utils";
 import { Dict, JSONCompatible, LLMSpec } from "./backend/typing";
 import {
@@ -113,7 +121,6 @@ import {
   isChromium,
   isMobileSafari,
 } from "react-device-detect";
-import MultiEvalNode from "./MultiEvalNode";
 import FlowSidebar from "./FlowSidebar";
 import NestedMenu, { NestedMenuItemProps } from "./NestedMenu";
 import RequestClarificationModal, {
@@ -203,6 +210,7 @@ const INITIAL_LLM = () => {
 const nodeTypes = {
   textfields: TextFieldsNode, // Register the custom node
   prompt: PromptNode,
+  selectvars: SelectVarsNode,
   chat: PromptNode,
   simpleval: SimpleEvalNode,
   evaluator: CodeEvaluatorNode,
@@ -217,6 +225,10 @@ const nodeTypes = {
   join: JoinNode,
   split: SplitNode,
   processor: CodeEvaluatorNode,
+  upload: UploadNode,
+  chunk: ChunkNode,
+  retrieval: RetrievalNode,
+  rerank: RerankNode,
   media: MediaNode,
 };
 
@@ -236,6 +248,10 @@ const nodeEmojis = {
   comment: "✏️",
   join: <IconArrowMerge size={16} />,
   split: <IconArrowsSplit size={16} />,
+  upload: "📂",
+  chunk: "🧩",
+  retrieval: "🎯",
+  rerank: <IconSortAscending size={16} />,
   media: "📺",
 };
 
@@ -366,8 +382,80 @@ const App = () => {
 
   // Add Nodes list
   const addNodesMenuItems = useMemo(() => {
+    // RAG-related nodes only if RAG is available
+    const ragNodes = [
+      {
+        // Menu.Label
+        key: "RAG",
+      },
+      {
+        key: "upload",
+        title: "Upload Docs Node",
+        icon: nodeEmojis.upload,
+        tooltip: "Upload documents to the flow, such as text files or PDFs.",
+        onClick: () => addNode("upload"),
+      },
+      {
+        key: "chunk",
+        title: "Chunking Node",
+        icon: nodeEmojis.chunk,
+        tooltip:
+          "Chunk texts into smaller pieces. Compare different chunking methods. Typically used after the Upload Node.",
+        onClick: () => addNode("chunk"),
+      },
+      {
+        key: "retrieval",
+        title: "Retrieval Node",
+        icon: nodeEmojis.retrieval,
+        tooltip:
+          "Given chunks and queries, retrieve relevant chunks for the given query. Compare retrieval methods across queries. Retrieval methods include both classical methods like BM25, and vector stores.",
+        onClick: () => addNode("retrieval"),
+      },
+      {
+        key: "rerank",
+        title: "Rerank Node",
+        icon: nodeEmojis.rerank,
+        tooltip: "Reranks retrieval outputs.",
+        onClick: () => addNode("rerank"),
+      },
+      {
+        key: "divider",
+      },
+    ] as NestedMenuItemProps[];
+
+    // Misc nodes
+    const miscNodes: NestedMenuItemProps[] = [
+      {
+        // Menu.Label
+        key: "Misc",
+      },
+      {
+        key: "comment",
+        title: "Comment Node",
+        icon: nodeEmojis.comment,
+        tooltip: "Make a comment about your flow.",
+        onClick: () => addNode("comment"),
+      },
+      {
+        key: "script",
+        title: "Global Python Scripts",
+        icon: nodeEmojis.script,
+        tooltip:
+          "Specify directories to load as local packages, so they can be imported in your Python evaluator nodes (add to sys path).",
+        onClick: () => addNode("scriptNode", "script"),
+      },
+      {
+        key: "selectvars",
+        title: "Filter Variables Node",
+        icon: <IconCheckbox size={16} />,
+        tooltip:
+          "Filter which variables and metavariables to keep for the next steps.",
+        onClick: () => addNode("selectVarsNode", "selectvars"),
+      },
+    ];
+
     // All initial nodes available in ChainForge
-    const initNodes = [
+    let initNodes = [
       {
         // Menu.Label
         key: "Input Data",
@@ -559,26 +647,11 @@ const App = () => {
       {
         key: "divider",
       },
-      {
-        // Menu.Label
-        key: "Misc",
-      },
-      {
-        key: "comment",
-        title: "Comment Node",
-        icon: nodeEmojis.comment,
-        tooltip: "Make a comment about your flow.",
-        onClick: () => addNode("comment"),
-      },
-      {
-        key: "script",
-        title: "Global Python Scripts",
-        icon: nodeEmojis.script,
-        tooltip:
-          "Specify directories to load as local packages, so they can be imported in your Python evaluator nodes (add to sys path).",
-        onClick: () => addNode("scriptNode", "script"),
-      },
     ] as NestedMenuItemProps[];
+
+    // Add RAG nodes to menu if RAG dependencies are installed on the backend
+    if (RAG_AVAILABLE) initNodes = [...initNodes, ...ragNodes, ...miscNodes];
+    else initNodes = [...initNodes, ...miscNodes];
 
     // Add favorite nodes to the menu
     const favoriteNodes = favorites?.nodes?.map(({ name, value, uid }, idx) => {
@@ -609,9 +682,6 @@ const App = () => {
         key: "divider",
       });
     }
-
-    // <Menu.Label>Favorites</Menu.Label>
-    // <Menu.Divider />
 
     return initNodes;
   }, [favorites, addNode]);
@@ -1122,26 +1192,51 @@ const App = () => {
     ],
   );
 
-  // Load flow from examples modal
-  const onSelectExampleFlow = (name: string, example_category?: string) => {
-    // Trigger the 'loading' modal
+  // cfzip importer
+  const importFlowZipFromURL = useCallback(
+    async (url: string) => {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
+      const blob = await res.blob();
+
+      // ensure filename ends with .cfzip
+      const urlName =
+        new URL(url, window.location.origin).pathname.split("/").pop() ||
+        "example.cfzip";
+      const fileName = /\.cfzip$/i.test(urlName) ? urlName : `${urlName}.cfzip`;
+
+      const file = new File([blob], fileName, { type: "application/zip" });
+
+      const { flow, flowName } = await importFlowBundle(file);
+      importFlowFromJSON(flow);
+      await safeSetFlowFileName(flowName);
+    },
+    [importFlowFromJSON, safeSetFlowFileName],
+  );
+
+  // loader for example flows
+  const onSelectExampleFlow = async (name: string) => {
     setIsLoading(true);
+    try {
+      const base = FLASK_BASE_URL.replace(/\/$/, "");
 
-    // Detect a special category of the example flow, and use the right loader for it:
-    if (example_category === "openai-eval") {
-      importFlowFromOpenAIEval(name);
+      if (/\.cfzip$/i.test(name)) {
+        const file = name.endsWith(".cfzip") ? name : `${name}.cfzip`;
+        const url = name.startsWith("http") ? name : `${base}/examples/${file}`;
+        await importFlowZipFromURL(url);
+        return;
+      }
+
+      // treat everything else as .cforge JSON
+      const baseName = name.replace(/\.cforge$/i, "");
+      const flowJSON = await fetchExampleFlow(baseName);
+      importFlowFromJSON(flowJSON);
       setFlowFileNameAndCache(`flow-${Date.now()}`);
-      return;
+    } catch (err) {
+      handleError(err as Error);
+    } finally {
+      setIsLoading(false);
     }
-
-    // Fetch the example flow data from the backend
-    fetchExampleFlow(name)
-      .then(function (flowJSON) {
-        // We have the data, import it:
-        importFlowFromJSON(flowJSON);
-        setFlowFileNameAndCache(`flow-${Date.now()}`);
-      })
-      .catch(handleError);
   };
 
   // When the user clicks the 'New Flow' button

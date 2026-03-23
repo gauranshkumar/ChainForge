@@ -1,12 +1,33 @@
 from setuptools import setup, find_packages
 
+# Dependency groups
+rag_deps = [
+    # RAGForge dependencies
+    "grpcio",
+    "numpy<2.0",  # numpy>=2.0 is not compatible with libraries like torch
+    "pymupdf",
+    "python-docx",
+    "tiktoken",
+    "nltk>=3.8",
+    "transformers",
+    "scikit-learn>=1.4.0",
+    "sentence-transformers",
+    "rank-bm25",
+    "whoosh",
+    "cohere",
+    "chonkie>=1.0",
+    "model2vec>=0.5.0",  # required by chonkie
+    "pyarrow>=14.0,<=16.0.0",  # newer versions of pyarrow require CMake 3.25 or higher, which is not compatible with all systems
+    "lancedb<0.18.0"  # pylance requires pyarrow 14 or higher. Later versions of LanceDB give strange errors with pyarrow<=16.0.0.
+]
+
 def readme():
     with open('README.md', encoding='utf-8') as f:
         return f.read()
 
 setup(
     name="chainforge",
-    version="0.3.6.4",
+    version="0.3.7.0",
     packages=find_packages(),
     author="Ian Arawjo",
     description="A Visual Programming Environment for Prompt Engineering",
@@ -16,7 +37,7 @@ setup(
     license="MIT",
     url="https://github.com/ianarawjo/ChainForge/",
     install_requires=[
-        # Package dependencies
+        # Core package dependencies (pre-RAGForge)
         "flask>=2.2.3",
         "flask[async]",
         "flask_cors",
@@ -28,6 +49,12 @@ setup(
         "mistune>=2.0",  # for LLM response markdown parsing
         "markitdown[pdf, docx, xlsx, xls, pptx]",
     ],
+    extras_require={
+        # Extra dependencies for functionality like RAGForge,
+        # which may not be needed by all users
+        "rag": rag_deps,
+        "all": rag_deps,
+    },
     entry_points={
         "console_scripts": [
             "chainforge = chainforge.app:main",
